@@ -1,7 +1,8 @@
 """The dashboard pages (plain HTML/CSS/JS, no external assets): Monitor, Network & devices, SPAN."""
 from . import __version__
 
-CSS = r"""
+CSS = r""".cmdline{color:#8ab4ff;font-weight:600}.err{color:#ff8d8d}
+
 :root{color-scheme:dark;--bg:#0b1220;--panel:#121d30;--line:#26364e;--muted:#91a2ba;--text:#e8eef8;--accent:#4ea1ff;--warn:#ffd17a;--bad:#ff8d8d;--good:#8bd6a7}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 Inter,Segoe UI,Arial,sans-serif}
 header{padding:22px clamp(18px,4vw,56px);border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
@@ -64,6 +65,8 @@ const fmtBytes=b=>b>=1e6?(b/1e6).toFixed(1)+' MB':b>=1e3?(b/1e3).toFixed(0)+' KB
 const when=t=>t?new Date(t).toLocaleString():'—';
 function dur(a,b){if(!a||!b)return'';const s=Math.max(0,(new Date(b)-new Date(a))/1000);return s<90?Math.round(s)+'s':s<5400?Math.round(s/60)+' min':(s/3600).toFixed(1)+' h'}
 const NAMES={};
+async function copy(text,btn){const label=btn.textContent;try{await navigator.clipboard.writeText(text);btn.textContent='Copied'}catch(e){btn.textContent='Select & copy manually'}setTimeout(()=>btn.textContent=label,1500)}
+
 const who=ip=>ip&&NAMES[ip]?NAMES[ip]+' ('+ip+')':(ip||'');
 function mainFlow(c){const f=c&&c.top_flows&&c.top_flows[0];return f?who(f.src)+' → '+who(f.dst)+' ('+f.proto.toUpperCase()+')':''}
 async function send(method,url,data){
@@ -80,7 +83,7 @@ function portChips(ports){const keys=Object.keys(ports||{}).sort((a,b)=>parseInt
 """
 
 PAGES = {"/": "Monitor", "/network": "Network & devices", "/span": "SPAN discovery",
-         "/reports": "Reports", "/settings": "Settings"}
+         "/terminal": "Terminal", "/reports": "Reports", "/settings": "Settings"}
 
 
 def page(path: str, body: str, script: str) -> str:
@@ -128,7 +131,6 @@ MONITOR_BODY = r"""
 <p class="muted">This dashboard reports model outputs, not confirmed incidents. Validate alerts before taking action.</p>
 """
 MONITOR_JS = r"""let selected=null,selectedSig='',maxIncident=null;
-async function copy(text,btn){try{await navigator.clipboard.writeText(text);btn.textContent='Copied'}catch(e){btn.textContent='Select & copy manually'}setTimeout(()=>btn.textContent='Copy',1500)}
 async function download(id){try{const r=await fetch('/api/incidents/'+id+'/evidence',{headers:hdr()});if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.status);
  const blob=await r.blob();const name=(r.headers.get('Content-Disposition')||'').match(/filename="?([^";]+)/);const a=el('a',{href:URL.createObjectURL(blob),download:name?name[1]:'incident-'+id+'.pcap'});document.body.append(a);a.click();a.remove()}catch(e){alert('Could not download evidence: '+e.message)}}
 function table(head,rows){return el('div',{className:'table-wrap'},el('table',{},el('thead',{},el('tr',{},head.map(h=>el('th',{},h)))),el('tbody',{},rows.map(r=>el('tr',{},r.map(v=>el('td',{},v)))))))}
@@ -449,8 +451,77 @@ $('testaya').onclick=async()=>{if(!await save())return;$('ayamsg').textContent='
 pulse();load().then(()=>{ayaMode();ayaCheck(false)});setInterval(pulse,5000);
 """
 
+TERMINAL_BODY = r"""
+<div class="card"><div class="phase"><div><h2>Terminal</h2>
+<div class="muted">Run nmap, ping or any other command on this computer and watch the output live. nmap scans run here are added to the device inventory and scan history, and Aya reviews them.</div></div>
+<label class="small">Shell <select id="shell"></select></label></div>
+<div id="termwarn" class="banner" style="margin:12px 0 0">Commands run on this computer with NetAI's administrator rights. Every command is logged below.</div></div>
+<div class="two" style="margin-top:14px;grid-template-columns:minmax(260px,1fr) 3fr">
+<div class="card small"><div style="font-weight:600;margin-bottom:6px">Target</div>
+<input type="text" id="target" list="targets" placeholder="IP, subnet or host" style="width:100%"><datalist id="targets"></datalist>
+<div style="font-weight:600;margin:14px 0 6px">nmap</div><div class="actions" id="nmapbtns"></div>
+<div style="font-weight:600;margin:14px 0 6px">Network tools</div><div class="actions" id="toolbtns"></div>
+<p class="muted" style="margin-bottom:0">Buttons fill in the command so you can check or edit it; press Enter to run. Commands can't ask for keyboard input.</p></div>
+<div class="card" style="padding:0;overflow:hidden;display:flex;flex-direction:column">
+<div class="row" style="padding:8px 12px;margin:0;border-bottom:1px solid var(--line)"><span id="runstate" class="small muted">Ready</span><span style="flex:1"></span>
+<button id="stopbtn" class="small" hidden>Stop</button><button id="copybtn" class="small">Copy output</button><button id="clearbtn" class="small">Clear</button></div>
+<pre id="screen" style="margin:0;background:#05090f;color:#d5e4f5;font:13px/1.45 Consolas,Menlo,monospace;padding:12px 14px;height:460px;overflow:auto;white-space:pre-wrap;word-break:break-word"></pre>
+<div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--line);background:#070d16">
+<span style="font:13px Consolas,Menlo,monospace;color:#7c4dff">netai&gt;</span>
+<input type="text" id="cmd" autocomplete="off" spellcheck="false" placeholder="nmap -sn 192.168.1.0/24" style="flex:1;font:13px Consolas,Menlo,monospace;background:transparent;border:0;outline:0;color:var(--text)">
+<button id="runbtn" class="small">Run</button></div></div></div>
+<h2 class="section">Command log</h2>
+<div class="card table-wrap"><table><thead><tr><th>When</th><th>Command</th><th>Shell</th><th>Exit</th><th>Time</th><th></th></tr></thead><tbody id="log"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table></div>
+"""
+TERMINAL_JS = r"""
+let info=null,cur=null,offset=0,hist=[],hpos=-1,timer=null;
+const T=()=>$('target').value.trim()||'192.168.1.0/24';
+function presets(win){return{
+ nmap:[['Find devices',t=>'nmap -sn '+t],['Quick ports',t=>'nmap -F '+t],['Services & versions',t=>'nmap -sV --top-ports 1000 '+t],['OS detection',t=>'nmap -O '+t],
+  ['All TCP ports',t=>'nmap -p- -T4 '+t],['Top UDP ports',t=>'nmap -sU --top-ports 50 '+t],['Vulnerability scripts (intrusive)',t=>'nmap -sV --script vuln '+t]],
+ tools:[['Ping',t=>(win?'ping -n 4 ':'ping -c 4 ')+t.split('/')[0]],['Traceroute',t=>(win?'tracert -d ':'traceroute -n ')+t.split('/')[0]],['DNS lookup',t=>'nslookup '+t.split('/')[0]],
+  ['ARP table',()=>win?'arp -a':'ip neigh'],['IP config',()=>win?'ipconfig /all':'ip addr'],['Connections',()=>win?'netstat -ano':'ss -tunap']]}}
+function write(text,cls){const scr=$('screen');const atEnd=scr.scrollTop+scr.clientHeight>=scr.scrollHeight-30;const span=el('span',{className:cls||''},text);scr.append(span);
+ while(scr.childNodes.length>4000)scr.firstChild.remove();if(atEnd)scr.scrollTop=scr.scrollHeight}
+function busy(on){$('stopbtn').hidden=!on;$('runbtn').disabled=on;$('cmd').disabled=on||!info.enabled;if(!on)setTimeout(()=>$('cmd').focus(),0)}
+async function load(){info=await get('/api/terminal');
+ if(!$('shell').options.length)for(const [k,v] of Object.entries(info.shells))$('shell').append(el('option',{value:k},v));
+ if(!info.enabled){$('termwarn').textContent=info.reason;$('cmd').disabled=true;$('runbtn').disabled=true}
+ if(!$('nmapbtns').children.length){const P=presets(info.windows);
+  for(const [l,f] of P.nmap)$('nmapbtns').append(el('button',{className:'small',onclick:()=>fill(f(T()))},l));
+  for(const [l,f] of P.tools)$('toolbtns').append(el('button',{className:'small',onclick:()=>fill(f(T()))},l));
+  if(!info.nmap)$('nmapbtns').append(el('div',{className:'muted',style:'width:100%'},'nmap isn’t installed: get it free from nmap.org.'))}
+ renderLog();if(info.running.length&&!cur)attach(info.running[0])}
+function renderLog(){const rows=$('log');rows.replaceChildren();hist=info.history.map(h=>h.command);
+ if(!info.history.length)rows.append(el('tr',{},el('td',{colSpan:6,className:'muted'},'No commands yet.')));
+ for(const h of info.history)rows.append(el('tr',{},el('td',{className:'small'},when(h.started_at)),el('td',{},el('code',{style:'font-size:12.5px'},h.command)),el('td',{className:'small'},h.shell),
+  el('td',{className:'small '+(h.exit_code===0?'ok':h.exit_code==null?'muted':'bad')},h.exit_code==null?'running':String(h.exit_code)),el('td',{className:'small'},h.seconds!=null?h.seconds+'s':''),
+  el('td',{},el('button',{className:'small',style:'padding:4px 9px',onclick:()=>fill(h.command)},'Use again'))))}
+function fill(c){$('cmd').value=c;$('cmd').focus()}
+function attach(r){cur=r.id;offset=0;busy(true);$('runstate').textContent='Running…';poll()}
+async function run(){const c=$('cmd').value.trim();if(!c||!info.enabled)return;
+ if(c==='clear'||c==='cls'){$('screen').replaceChildren();$('cmd').value='';return}
+ write('netai> '+c+'\n','cmdline');$('cmd').value='';hpos=-1;
+ try{const r=await send('POST','/api/terminal/run',{command:c,shell:$('shell').value});attach(r)}catch(e){write(e.message+'\n','err')}}
+async function poll(){clearTimeout(timer);if(!cur)return;try{const r=await get('/api/terminal/runs/'+cur+'?offset='+offset);if(r.output)write(r.output);offset=r.offset;
+ $('runstate').textContent=(r.running?'Running · ':'Finished · exit code '+r.exit_code+' · ')+r.elapsed+'s';
+ if(r.running){timer=setTimeout(poll,400)}else{cur=null;busy(false);write('\n','');load()}}catch(e){write('\n'+e.message+'\n','err');cur=null;busy(false)}}
+$('cmd').addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();run()}
+ else if(e.key==='ArrowUp'){if(hpos<hist.length-1){hpos++;$('cmd').value=hist[hpos]}e.preventDefault()}
+ else if(e.key==='ArrowDown'){if(hpos>0){hpos--;$('cmd').value=hist[hpos]}else{hpos=-1;$('cmd').value=''}e.preventDefault()}});
+$('runbtn').onclick=run;$('stopbtn').onclick=()=>cur&&send('POST','/api/terminal/runs/'+cur+'/stop').catch(e=>alert(e.message));
+$('clearbtn').onclick=()=>$('screen').replaceChildren();
+$('copybtn').onclick=e=>copy($('screen').textContent,e.target);
+document.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='c'&&cur&&!window.getSelection().toString()){e.preventDefault();$('stopbtn').click()}});
+async function targets(){try{const [d,n]=await Promise.all([get('/api/devices'),get('/api/network')]);const dl=$('targets');
+ for(const s of n.subnets)dl.append(el('option',{value:s.cidr},s.source));for(const x of d.items)dl.append(el('option',{value:x.ip},x.name||''));
+ if(!$('target').value&&n.subnets.length)$('target').value=n.subnets[0].cidr}catch(e){}}
+pulse();load().catch(e=>{$('termwarn').textContent='Could not load the terminal: '+e.message});targets();setInterval(pulse,5000);
+"""
+
 DASHBOARD = page("/", MONITOR_BODY, MONITOR_JS)
 NETWORK_PAGE = page("/network", NETWORK_BODY, NETWORK_JS)
 SPAN_PAGE = page("/span", SPAN_BODY, SPAN_JS)
 REPORTS_PAGE = page("/reports", REPORTS_BODY, REPORTS_JS)
 SETTINGS_PAGE = page("/settings", SETTINGS_BODY, SETTINGS_JS)
+TERMINAL_PAGE = page("/terminal", TERMINAL_BODY, TERMINAL_JS)

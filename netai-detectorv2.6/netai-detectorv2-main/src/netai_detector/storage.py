@@ -100,6 +100,13 @@ class EventStore:
                 conn.execute("ALTER TABLE scan_jobs ADD COLUMN report_id INTEGER")
             except sqlite3.OperationalError:
                 pass
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS terminal_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    started_at TEXT NOT NULL, command TEXT NOT NULL, shell TEXT NOT NULL,
+                    exit_code INTEGER, seconds REAL
+                )
+            """)
             conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS reports (
@@ -347,6 +354,26 @@ class EventStore:
         with self._connect() as conn:
             row = conn.execute("SELECT id, data FROM reports ORDER BY id DESC LIMIT 1").fetchone()
         return {**json.loads(row["data"]), "id": row["id"]} if row else None
+
+    # ------------------------------------------------------------------ terminal audit log
+    def add_terminal_history(self, command: str, shell: str, keep: int = 5000) -> int:
+        with self._connect() as conn:
+            cur = conn.execute("INSERT INTO terminal_history (started_at, command, shell) VALUES (?, ?, ?)",
+                               (datetime.now(timezone.utc).isoformat(), command, shell))
+            new_id = int(cur.lastrowid)
+            conn.execute("DELETE FROM terminal_history WHERE id <= ?", (new_id - keep,))
+            return new_id
+
+    def finish_terminal_history(self, entry_id: int | None, exit_code: int | None, seconds: float) -> None:
+        if entry_id:
+            with self._connect() as conn:
+                conn.execute("UPDATE terminal_history SET exit_code=?, seconds=? WHERE id=?",
+                             (exit_code, seconds, entry_id))
+
+    def terminal_history(self, limit: int = 50) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute("SELECT * FROM terminal_history ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     def get_setting(self, key: str, default=None):
         with self._connect() as conn:

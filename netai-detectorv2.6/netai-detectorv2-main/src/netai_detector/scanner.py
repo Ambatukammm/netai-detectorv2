@@ -358,6 +358,28 @@ class ScanManager:
                          daemon=True).start()
         return self.status()["current"]
 
+    def import_results(self, command: str, xml_text: str, targets: list[str]) -> str:
+        """Add an nmap run from the terminal to the inventory and scan history (Aya reviews it).
+        Returns a short note for the terminal."""
+        hosts = parse_nmap_xml(xml_text)
+        if not targets:
+            targets = sorted({h["ip"] + "/32" for h in hosts})
+        if not targets:
+            return "nmap found no devices, so nothing was added to the inventory."
+        profile = "discover" if re.search(r"(^|\s)-sn\b", command) else "terminal"
+        job_id = self.store.add_scan_job(profile, targets)
+        self._save(hosts, targets, complete=False)
+        if hosts:
+            self.store.save_scan_results(job_id, hosts)
+        msg = f"Found {len(hosts)} device(s) (from the terminal)."
+        self.store.finish_scan_job(job_id, "done", len(hosts), msg)
+        if self.on_finish:
+            job = {"id": job_id, "status": "done", "targets": targets, "profile": profile,
+                   "hosts_up": len(hosts), "message": msg}
+            threading.Thread(target=self.on_finish, args=(job,), name="netai-review", daemon=True).start()
+        return (f"{len(hosts)} device(s) added to the inventory and scan history; "
+                "Aya is reviewing the scan (Network & devices → Scan history).")
+
     def cancel(self) -> bool:
         with self._lock:
             proc = self._proc

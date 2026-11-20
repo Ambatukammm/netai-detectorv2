@@ -17,8 +17,9 @@ from pydantic import BaseModel, Field
 from . import __version__
 from .advisor import advise
 from .capture import CaptureUnavailable
+from . import config
 from .config import API_KEY, EVIDENCE_DIR, MAX_PCAP_MB
-from .dashboard import DASHBOARD, NETWORK_PAGE, REPORTS_PAGE, SETTINGS_PAGE, SPAN_PAGE
+from .dashboard import DASHBOARD, NETWORK_PAGE, REPORTS_PAGE, SETTINGS_PAGE, SPAN_PAGE, TERMINAL_PAGE
 from .features import FEATURE_NAMES, FEATURE_VERSION
 from .devices import display_name, valid_ipv4
 from .forensics import is_internal
@@ -29,6 +30,7 @@ from .notifier import Notifier, ReportService
 from .reports import KINDS, build_report, render_html
 from .passive import service_name
 from .scanner import ScanManager, results_csv
+from .terminal import Terminal, available_shells, nmap_targets, terminal_policy
 from .storage import EventStore
 
 store = EventStore()
@@ -39,6 +41,8 @@ reports = ReportService(store, settings, passive_status=lambda: monitor.passive.
                         scan_info=lambda: {**scanner.available(), "jobs": store.scan_jobs(10)})
 notifier = Notifier(store, settings, reports, on_error=monitor._warn)
 scanner.on_finish = notifier.scan_finished
+terminal = Terminal(store, find_nmap=lambda: scanner.nmap,
+                    on_nmap_results=lambda cmd, xml: scanner.import_results(cmd, xml, nmap_targets(cmd)))
 
 
 @asynccontextmanager
@@ -47,6 +51,7 @@ async def lifespan(app: FastAPI):
     notifier.start()
     yield
     notifier.stop()
+    terminal.stop_all()
     monitor.stop()
 
 
@@ -56,6 +61,31 @@ app = FastAPI(
     version=__version__,
     lifespan=lifespan,
 )
+
+
+LOCAL_NAMES = {"localhost", "127.0.0.1", "::1", "testserver"}
+
+
+def host_allowed(host_header: str) -> bool:
+    """When NetAI listens only on this computer, accept only requests addressed to it by a local name.
+    This stops 'DNS rebinding': a web page pointing its own domain at 127.0.0.1 to reach this API."""
+    if config.HOST not in ("127.0.0.1", "localhost", "::1"):
+        return True
+    host = (host_header or "").strip().lower()
+    if host.startswith("["):                      # [::1]:8000
+        host = host[1:host.find("]")] if "]" in host else host
+    elif host.count(":") == 1:
+        host = host.split(":")[0]
+    return host in LOCAL_NAMES or host in config.ALLOWED_HOSTS
+
+
+@app.middleware("http")
+async def check_host(request: Request, call_next):
+    if not host_allowed(request.headers.get("host", "")):
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse("Invalid Host header. Open NetAI at http://127.0.0.1 (or add the name to "
+                                 "NETAI_ALLOWED_HOSTS).", status_code=400)
+    return await call_next(request)
 
 
 class PredictionRequest(BaseModel):
@@ -100,6 +130,11 @@ def reports_page():
 @app.get("/settings", response_class=HTMLResponse, include_in_schema=False)
 def settings_page():
     return HTMLResponse(SETTINGS_PAGE)
+
+
+@app.get("/terminal", response_class=HTMLResponse, include_in_schema=False)
+def terminal_page():
+    return HTMLResponse(TERMINAL_PAGE)
 
 
 @app.get("/health")
@@ -481,6 +516,60 @@ async def email_report(report_id: int, x_api_key: str | None = Header(default=No
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Sending failed: {exc}") from exc
     return {"sent_to": settings.get()["email_to"]}
+
+
+# ------------------------------------------------------------------ terminal
+class TerminalRequest(BaseModel):
+    command: str = Field(..., max_length=2000)
+    shell: str | None = Field(default=None, max_length=20)
+
+
+def _terminal_allowed() -> None:
+    enabled, reason = terminal_policy()
+    if not enabled:
+        raise HTTPException(status_code=403, detail=reason)
+
+
+@app.get("/api/terminal")
+def terminal_info(x_api_key: str | None = Header(default=None)):
+    require_key(x_api_key)
+    enabled, reason = terminal_policy()
+    return {"enabled": enabled, "reason": reason, "shells": available_shells(), "nmap": scanner.nmap,
+            "windows": os.name == "nt", "running": terminal.running() if enabled else [],
+            "history": store.terminal_history(40)}
+
+
+@app.post("/api/terminal/run")
+def terminal_run(body: TerminalRequest, x_api_key: str | None = Header(default=None),
+                 x_requested_with: str | None = Header(default=None)):
+    """Run one command on this computer (with NetAI's rights) and return a run id to poll."""
+    require_control(x_api_key, x_requested_with)
+    _terminal_allowed()
+    try:
+        return terminal.run(body.command, body.shell)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.get("/api/terminal/runs/{run_id}")
+def terminal_read(run_id: str, offset: int = Query(0, ge=0), x_api_key: str | None = Header(default=None),
+                  x_requested_with: str | None = Header(default=None)):
+    require_control(x_api_key, x_requested_with)
+    _terminal_allowed()
+    try:
+        return terminal.read(run_id, offset)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="No such command run") from exc
+
+
+@app.post("/api/terminal/runs/{run_id}/stop")
+def terminal_stop(run_id: str, x_api_key: str | None = Header(default=None),
+                  x_requested_with: str | None = Header(default=None)):
+    require_control(x_api_key, x_requested_with)
+    _terminal_allowed()
+    return {"stopped": terminal.stop(run_id)}
 
 
 @app.post("/api/alerts/test")

@@ -1,7 +1,7 @@
 # NetAI Detector
 
 **Cross-platform network anomaly detection and monitoring toolkit.**  
-**Made by Ruel · Version 2.5.0**
+**Made by Ruel · Version 2.6.0**
 
 NetAI Detector is an independent cybersecurity project designed to help inspect network traffic, build a baseline of normal activity, identify statistically unusual traffic windows, and review detection events through a local web dashboard.
 
@@ -22,6 +22,7 @@ NetAI Detector is an independent cybersecurity project designed to help inspect 
 - **Email notifications you set up in the dashboard:** Settings page with Gmail / Microsoft 365 / Outlook presets and a test button. Choose what to be emailed about: incidents, new devices, newly found risky services, finished scans, and daily or weekly reports.
 - **Reports:** network & device inventory, SPAN discovery, incident and full reports, each with a health grade, prioritised findings with recommended actions, and what changed since the last report. View, download (HTML) or email them.
 - **Aya, the local AI analyst:** Aya reviews every report and every finished scan: what she found, her honest assessment, what to improve, and what changed. She runs on this computer, with built-in expert rules (no setup) or a local language model through Ollama or LM Studio. Nothing is sent to the cloud.
+- **Terminal:** run nmap, ping, traceroute or any command from the dashboard with live output, one-click nmap presets, command history and an audit log. nmap scans run here go into the inventory and scan history, and Aya reviews them.
 - **Scan history kept on the machine:** every scan's full results are stored, compared with the previous scan of the same networks, and downloadable as CSV or JSON.
 - **SPAN discovery page:** plug into a switch's mirror port and NetAI maps every device and the services it offers *without sending a packet*, tells you whether mirroring is working, and includes setup guides for Cisco, Aruba, UniFi, Netgear and MikroTik.
 - Drag-and-drop PCAP analysis in the dashboard (`.pcap` / `.pcapng`), now with incidents too.
@@ -84,6 +85,7 @@ Everything works with defaults. To change something, copy `.env.example` to `.en
 - `GET|POST /api/settings/notifications` · `POST /api/settings/notifications/test-email` — notification and Aya settings (secrets are never returned).
 - `GET /api/aya` · `POST /api/aya/test` — Aya's engine, model server status and installed models; test review.
 - `GET /api/scans/{id}/results?format=json|csv` · `POST /api/scans/{id}/review` — stored scan results; ask Aya to review a scan again.
+- `GET /api/terminal` · `POST /api/terminal/run` · `GET /api/terminal/runs/{id}` · `POST /api/terminal/runs/{id}/stop` — the terminal (only when enabled; see below).
 - `GET|POST /api/reports` · `GET /api/reports/{id}` · `GET /api/reports/{id}/html` · `POST /api/reports/{id}/email` — reports.
 - `GET /api/features` — feature names and schema version.
 - `GET /api/status` — monitor phase, learning progress, warnings, model info.
@@ -143,6 +145,9 @@ All optional. Put overrides in `.env` (loaded automatically) or in the environme
 | `NETAI_AYA_ENGINE` | `builtin` | Aya's engine: `builtin`, `ollama` or `openai` (LM Studio, llama.cpp, LocalAI). Also on the Settings page |
 | `NETAI_AYA_URL` / `NETAI_AYA_MODEL` | Ollama `http://127.0.0.1:11434`, LM Studio `http://127.0.0.1:1234` / empty | Aya's local model server and model |
 | `NETAI_AYA_TIMEOUT` | `300` | Seconds to wait for a local model (CPUs are slow) |
+| `NETAI_TERMINAL` | `auto` | Dashboard terminal: `auto` = only when bound to 127.0.0.1 · `on` = also on the network (requires `NETAI_API_KEY`) · `off` |
+| `NETAI_TERMINAL_TIMEOUT_MINUTES` | `30` | Stop any terminal command after this long |
+| `NETAI_ALLOWED_HOSTS` | empty | Extra names the dashboard may be opened with when bound to 127.0.0.1 |
 
 Email settings in this table can also be set on the **Settings** page, which overrides `.env`.
 
@@ -169,6 +174,12 @@ Install **nmap** (free, https://nmap.org/download; the Windows installer also in
 
 **Only scan networks you own or are authorised to scan.** Port scans can trip intrusion-prevention systems and, rarely, upset fragile devices (old printers, industrial kit): start with *Find devices (fast)* and add exclusions where needed.
 
+## Terminal
+
+The **Terminal** page runs commands on the NetAI computer and streams the output: nmap (with presets for device discovery, quick ports, service versions, OS detection, all ports, UDP and vulnerability scripts), ping, traceroute, nslookup, ARP table, IP configuration and connections, or anything else. Use ↑/↓ for history, **Stop** (or Ctrl+C) to end a command. Commands can't ask for keyboard input, and stop after 30 minutes. When a simple `nmap` command finishes, its results are added to the device inventory and scan history and Aya reviews it, the same as scans from the Network page. If nmap isn't on the PATH, NetAI uses the copy it found.
+
+**Security:** commands run with NetAI's rights, which are normally administrator/root: the terminal is effectively an admin shell. So it is only available when the dashboard listens on this computer only (`NETAI_HOST=127.0.0.1`, the default); on the network it needs both `NETAI_API_KEY` and `NETAI_TERMINAL=on`, and you should also use a firewall rule and TLS. Every command (not its output) is logged with time and exit code. While bound to 127.0.0.1, NetAI also rejects requests addressed to any other host name, which stops malicious websites from reaching it through "DNS rebinding".
+
 ## SPAN (port mirroring)
 
 Set a free switch port to mirror your uplink (or the ports/VLANs you care about), connect a second network card of the NetAI computer to it, set `NETAI_INTERFACE` to that card and restart. The **SPAN discovery** page confirms when mirrored traffic is arriving and lists every service seen. Passive discovery only finds services that are used while it listens; use an nmap scan to find quiet ones.
@@ -192,6 +203,7 @@ Hints and plans are suggestions, not verdicts. NetAI never blocks traffic by its
 | Alerts | when sent | summary with addresses and device names (set `NETAI_ALERT_INCLUDE_HOSTS=0` to remove them from email/Slack) |
 | Settings | when saved | mail server login (and a local model server key, if you set one), stored **unencrypted** in `data/netai.db` on this computer (never shown in the dashboard). Use an app password, and protect the computer and the `data/` folder |
 | Reports | when created (newest 200 kept) | the findings, tables and Aya's review shown in the report |
+| Terminal log | every terminal command (newest 5,000) | the command, shell, time and exit code (not the output) |
 | Scan results | after every nmap scan (newest 200 scans kept) | each device found: IP, hostname, MAC/vendor, OS guess, open ports and services |
 | Device inventory | always (passive discovery, scans, name lookups) | internal IP addresses, names, MAC/vendor, OS guess, open ports. Internet servers are not listed |
 
@@ -238,6 +250,7 @@ src/netai_detector/
   notifications.py  Dashboard-editable email/AI settings and the email sender
   notifier.py     Report service and background email notifier (new devices, schedules)
   reports.py      Report findings, grading and HTML/text rendering
+  terminal.py     Dashboard terminal (commands, live output, nmap import, audit log)
   aya.py          Aya, the local AI analyst (built-in rules, Ollama, OpenAI-compatible servers)
   api.py          FastAPI API
   dashboard.py    Dashboard page

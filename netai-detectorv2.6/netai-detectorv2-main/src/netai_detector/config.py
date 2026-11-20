@@ -120,3 +120,12 @@ AYA_ENGINE = os.getenv("NETAI_AYA_ENGINE", "builtin").strip().lower()
 AYA_URL = os.getenv("NETAI_AYA_URL", "").strip()
 AYA_MODEL = os.getenv("NETAI_AYA_MODEL", "").strip()
 AYA_TIMEOUT = max(10, env_int("NETAI_AYA_TIMEOUT", 300))   # local models on a CPU can be slow
+
+# --- Terminal ----------------------------------------------------------------------------------
+# auto = available only when the dashboard is bound to this computer (127.0.0.1). on = also when
+# reachable from the network (requires NETAI_API_KEY). off = never.
+TERMINAL = os.getenv("NETAI_TERMINAL", "auto").strip().lower()
+TERMINAL_TIMEOUT = max(10, env_int("NETAI_TERMINAL_TIMEOUT_MINUTES", 30) * 60)
+# Extra host names the dashboard may be opened with (comma list), e.g. netai.office.lan. Only
+# checked when bound to 127.0.0.1, where it blocks "DNS rebinding" attacks from malicious websites.
+ALLOWED_HOSTS = {h.strip().lower() for h in os.getenv("NETAI_ALLOWED_HOSTS", "").split(",") if h.strip()}

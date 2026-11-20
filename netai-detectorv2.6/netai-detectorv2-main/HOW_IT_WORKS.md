@@ -30,6 +30,7 @@
 | **Report** | Turns everything above into a graded report with prioritised findings and recommended actions, viewable, downloadable or emailed on a schedule | A manager can read it in two minutes |
 | **Aya reviews** | Aya, NetAI's local AI analyst, reviews every report and every finished scan: what she found, her opinion, what to improve, what changed since last time. Built-in rules, or a local model via Ollama/LM Studio. Scan results are stored on the machine and compared scan to scan | Turns data into advice, without sending anything to the cloud |
 | **Notify** | Emails incidents, new devices, risky services, finished scans and scheduled reports, set up from the Settings page | Nobody has to watch the screen |
+| **Terminal** | Run nmap, ping or any command from the dashboard with live output; nmap results flow into the inventory and Aya's reviews. Only on this computer by default, every command logged | Hands-on investigation without leaving NetAI |
 | **Refresh** | Weekly, retrains on recent traffic that was *not* flagged | The network changes over time |
 | **Dashboard** | Shows phase, progress, events and reasons; buttons to Pause or Relearn; drag-and-drop for `.pcap` files | Everything in one place |
 
