@@ -14,7 +14,7 @@ import time
 from types import SimpleNamespace
 from typing import Iterator
 import numpy as np
-from .config import WINDOW_FLUSH_SECONDS, WINDOW_PACKETS
+from .config import PROMISCUOUS, WINDOW_FLUSH_SECONDS, WINDOW_PACKETS
 from .evidence import cut_headers
 from .features import extract_window
 
@@ -124,7 +124,7 @@ class LiveSource(_QueueSource):
                 except Exception:
                     pass
 
-            self._sniffer = scapy.AsyncSniffer(iface=iface, prn=on_packet, store=False)
+            self._sniffer = scapy.AsyncSniffer(iface=iface, prn=on_packet, store=False, promisc=PROMISCUOUS)
             self._sniffer.start()
             time.sleep(1.5)  # a sniffer that cannot open the interface dies almost immediately
             thread = getattr(self._sniffer, "thread", None)
@@ -209,6 +209,17 @@ def _local_ip() -> str:
             return "127.0.0.1"
 
 
+def _set_promiscuous(sock, iface: str) -> bool:
+    """Linux: receive every frame on the interface (needed for SPAN/mirror ports), not only ours.
+    The kernel undoes this automatically when the socket closes."""
+    try:
+        mreq = struct.pack("iHH8s", socket.if_nametoindex(iface), 1, 0, b"")  # PACKET_MR_PROMISC
+        sock.setsockopt(263, 1, mreq)                                           # SOL_PACKET, ADD_MEMBERSHIP
+        return True
+    except OSError:
+        return False
+
+
 class RawSocketSource(_QueueSource):
     """Capture with plain operating-system sockets: no Scapy, no Npcap, no libpcap.
 
@@ -237,6 +248,8 @@ class RawSocketSource(_QueueSource):
                 sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))
                 if iface:
                     sock.bind((iface, 0))
+                    if PROMISCUOUS:
+                        _set_promiscuous(sock, iface)
                 self.interface = iface or "all interfaces"
                 self._strip = 14  # Ethernet header
             else:

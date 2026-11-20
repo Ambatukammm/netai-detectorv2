@@ -24,14 +24,20 @@
 | **Advise** | Each incident gets a step-by-step plan (confirm, contain, investigate, prevent) with the real addresses filled in and copy-paste firewall commands with undo. It runs offline; nothing is blocked automatically | Turns an alert into actions |
 | **Evidence** | High-severity incidents are saved as a `.pcap` file with headers only (contents cut off) to open in Wireshark | Proof, and the details for deeper investigation |
 | **Alert** | Desktop notification, plus email/Slack if set up | Someone finds out without watching the screen |
+| **Name** | Every address is shown with a device name: your label, nmap's hostname, the Windows computer name or reverse DNS | "LAPTOP-ACCOUNTS" means more than 192.168.1.23 |
+| **Discover (active)** | The Network page runs nmap over your subnets and the VLANs your router can reach, building a device inventory with vendors, OS guesses and open ports | Know what's on the network before something goes wrong |
+| **Discover (passive)** | On a SPAN/mirror port NetAI lists every device and service it sees in traffic, without sending anything | Inventory with zero impact on the network |
+| **Report** | Turns everything above into a graded report with prioritised findings and recommended actions, viewable, downloadable or emailed on a schedule | A manager can read it in two minutes |
+| **Aya reviews** | Aya, NetAI's local AI analyst, reviews every report and every finished scan: what she found, her opinion, what to improve, what changed since last time. Built-in rules, or a local model via Ollama/LM Studio. Scan results are stored on the machine and compared scan to scan | Turns data into advice, without sending anything to the cloud |
+| **Notify** | Emails incidents, new devices, risky services, finished scans and scheduled reports, set up from the Settings page | Nobody has to watch the screen |
 | **Refresh** | Weekly, retrains on recent traffic that was *not* flagged | The network changes over time |
 | **Dashboard** | Shows phase, progress, events and reasons; buttons to Pause or Relearn; drag-and-drop for `.pcap` files | Everything in one place |
 
 ## When live capture isn't possible
 It tries three methods in order: **Scapy**, then a **built-in capture** (no driver needed), then a clearly labelled **simulated demo**. The dashboard always says which one is active and why.
 
-## Why the "AI advisor" is offline
-The response plans come from built-in playbooks, not a cloud AI service. Sending your internal addresses to an outside service would undo the privacy-first design, and the playbooks work with no internet. A cloud AI model could be added later as an opt-in.
+## Why the AI is local
+Incident response plans come from built-in playbooks, and Aya, who writes the report reviews, runs on your own computer (built-in rules or a local model through Ollama/LM Studio). Your internal addresses never go to a cloud AI service.
 
 ## What it is *not*
 - A flagged window means **unusual**, not **malicious**. A big software update can look odd too. Validate alerts.

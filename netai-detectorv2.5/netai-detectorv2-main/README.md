@@ -1,7 +1,7 @@
 # NetAI Detector
 
 **Cross-platform network anomaly detection and monitoring toolkit.**  
-**Made by Ruel · Version 2.2.0**
+**Made by Ruel · Version 2.5.0**
 
 NetAI Detector is an independent cybersecurity project designed to help inspect network traffic, build a baseline of normal activity, identify statistically unusual traffic windows, and review detection events through a local web dashboard.
 
@@ -17,6 +17,13 @@ NetAI Detector is an independent cybersecurity project designed to help inspect 
 - **Offline response advisor:** each incident comes with a step-by-step plan (confirm, contain, investigate, prevent) filled in with the real addresses and ports, plus copy-paste firewall commands with undo. Runs entirely on your machine; nothing is ever blocked automatically.
 - **Evidence for Wireshark:** high-severity incidents are saved as headers-only `.pcap` files (payload cut off). Download them from the dashboard.
 - **Alerts:** desktop notification, browser notification, and optional email and Slack.
+- **Device names everywhere:** IPs are shown with the device's name, from your own labels, nmap, the Windows computer name (NetBIOS) or reverse DNS.
+- **Network & devices page:** nmap discovery of your subnets *and other VLANs* (found from your routing table, from traffic, or added by you), a searchable device inventory with vendor, OS, open ports and risky services, and a one-click port scan per device.
+- **Email notifications you set up in the dashboard:** Settings page with Gmail / Microsoft 365 / Outlook presets and a test button. Choose what to be emailed about: incidents, new devices, newly found risky services, finished scans, and daily or weekly reports.
+- **Reports:** network & device inventory, SPAN discovery, incident and full reports, each with a health grade, prioritised findings with recommended actions, and what changed since the last report. View, download (HTML) or email them.
+- **Aya, the local AI analyst:** Aya reviews every report and every finished scan: what she found, her honest assessment, what to improve, and what changed. She runs on this computer, with built-in expert rules (no setup) or a local language model through Ollama or LM Studio. Nothing is sent to the cloud.
+- **Scan history kept on the machine:** every scan's full results are stored, compared with the previous scan of the same networks, and downloadable as CSV or JSON.
+- **SPAN discovery page:** plug into a switch's mirror port and NetAI maps every device and the services it offers *without sending a packet*, tells you whether mirroring is working, and includes setup guides for Cisco, Aruba, UniFi, Netgear and MikroTik.
 - Drag-and-drop PCAP analysis in the dashboard (`.pcap` / `.pcapng`), now with incidents too.
 - Versioned 32-feature representation of traffic windows; packet payloads are never stored.
 - Isolation Forest anomaly model with saved preprocessing and metadata.
@@ -71,6 +78,13 @@ Everything works with defaults. To change something, copy `.env.example` to `.en
 - `GET /api/incidents/{id}` — one incident with the advisor's response plan.
 - `GET /api/incidents/{id}/evidence` — download the incident's headers-only `.pcap`.
 - `POST /api/alerts/test` — send a test alert on every configured channel (dashboard button).
+- `GET /api/devices` · `POST /api/devices/{ip}/label` · `POST /api/devices/{ip}/scan` · `DELETE /api/devices/{ip}` — device inventory.
+- `GET /api/network` · `POST /api/network/subnets` · `GET|POST /api/scan` · `POST /api/scan/cancel` — nmap subnets and scans.
+- `GET /api/span` — passive discovery status and every service found.
+- `GET|POST /api/settings/notifications` · `POST /api/settings/notifications/test-email` — notification and Aya settings (secrets are never returned).
+- `GET /api/aya` · `POST /api/aya/test` — Aya's engine, model server status and installed models; test review.
+- `GET /api/scans/{id}/results?format=json|csv` · `POST /api/scans/{id}/review` — stored scan results; ask Aya to review a scan again.
+- `GET|POST /api/reports` · `GET /api/reports/{id}` · `GET /api/reports/{id}/html` · `POST /api/reports/{id}/email` — reports.
 - `GET /api/features` — feature names and schema version.
 - `GET /api/status` — monitor phase, learning progress, warnings, model info.
 - `POST /api/monitor/{pause|resume|relearn}` and `POST /api/pcap` — used by the dashboard; require header `X-Requested-With: netai` (and the API key if set).
@@ -121,6 +135,43 @@ All optional. Put overrides in `.env` (loaded automatically) or in the environme
 | `NETAI_ALERT_EMAIL_TO` | empty | Comma-separated recipients |
 | `NETAI_ALERT_INCLUDE_HOSTS` | `1` | `0` replaces IP addresses with `[address]` in email/Slack alerts |
 | `NETAI_DASHBOARD_URL` | empty | Link included in alerts |
+| `NETAI_RESOLVE_NAMES` | `1` | Look up device names (reverse DNS, NetBIOS) |
+| `NETAI_NMAP` | auto | Path to nmap if it isn't found automatically |
+| `NETAI_SCAN_MAX_MINUTES` | `60` | Stop any scan after this long |
+| `NETAI_PASSIVE_DISCOVERY` | `1` | Learn devices and services from traffic (SPAN page) |
+| `NETAI_PROMISCUOUS` | `1` | Capture all traffic on the interface, needed for SPAN/mirror ports |
+| `NETAI_AYA_ENGINE` | `builtin` | Aya's engine: `builtin`, `ollama` or `openai` (LM Studio, llama.cpp, LocalAI). Also on the Settings page |
+| `NETAI_AYA_URL` / `NETAI_AYA_MODEL` | Ollama `http://127.0.0.1:11434`, LM Studio `http://127.0.0.1:1234` / empty | Aya's local model server and model |
+| `NETAI_AYA_TIMEOUT` | `300` | Seconds to wait for a local model (CPUs are slow) |
+
+Email settings in this table can also be set on the **Settings** page, which overrides `.env`.
+
+## Email notifications and reports
+
+Open **Settings**, click your mail provider's quick-setup button (or fill in your server), enter the username, password and recipients, **Save** and press **Send test email**. Gmail and Microsoft accounts with 2-step verification need an *app password*. Then tick what you want to be emailed about. New-device and risky-service emails compare against what NetAI saw a minute earlier; the first check after switching them on only records the current state, so you won't get a flood.
+
+Open **Reports** to create a report of any type, view it, download it as a self-contained HTML file, or email it. Scheduled reports use this computer's local time.
+
+### Aya, the local AI analyst
+
+Aya reviews every report and, automatically, every finished nmap scan. Her review always has the same four parts: **what I found**, **my assessment** (her honest opinion), **what to improve** (numbered, most important first, naming the devices) and **since last time**. Scan reviews compare with the previous scan of the same networks: new devices, devices gone quiet, newly opened and closed ports.
+
+Aya runs on this computer:
+
+- **Built-in** (default, nothing to install): NetAI's expert rules write the review. Fast and works everywhere.
+- **Local language model** for richer, more natural reviews: install [Ollama](https://ollama.com/download), run `ollama pull llama3.1:8b` (about 5 GB; 8 GB+ RAM, a graphics card makes it much faster), then in **Settings → Aya** choose *Ollama*, press *Check server*, pick the model, *Save* and *Test Aya*. LM Studio, llama.cpp server and LocalAI work too (OpenAI-compatible engine, e.g. `http://127.0.0.1:1234`).
+
+Your network data goes only to that model server, which normally runs on the same computer; the Settings page warns you if the server you enter is outside your local network. If the model isn't running, Aya falls back to her built-in analysis and says so in the review. Her reviews are advice: check before acting.
+
+## Network scanning and VLANs
+
+Install **nmap** (free, https://nmap.org/download; the Windows installer also installs Npcap, which NetAI uses for better capture). Open **Network & devices**, tick the subnets to scan, confirm you're authorised, and press **Start scan**. NetAI suggests subnets from this computer's interfaces, from its **routes to other VLANs**, from private ranges seen in traffic, and from your own list. It can only scan VLANs this computer can reach through your router/firewall; for isolated VLANs, run NetAI on a machine (or VLAN-tagged interface) inside them, or allow it on the firewall. Scans are limited to /16 per range and one at a time, and can be cancelled.
+
+**Only scan networks you own or are authorised to scan.** Port scans can trip intrusion-prevention systems and, rarely, upset fragile devices (old printers, industrial kit): start with *Find devices (fast)* and add exclusions where needed.
+
+## SPAN (port mirroring)
+
+Set a free switch port to mirror your uplink (or the ports/VLANs you care about), connect a second network card of the NetAI computer to it, set `NETAI_INTERFACE` to that card and restart. The **SPAN discovery** page confirms when mirrored traffic is arriving and lists every service seen. Passive discovery only finds services that are used while it listens; use an nmap scan to find quiet ones.
 
 ## When something is flagged: investigating an incident
 
@@ -138,7 +189,11 @@ Hints and plans are suggestions, not verdicts. NetAI never blocks traffic by its
 | Feature numbers | every window | aggregate counts only |
 | Culprit summary | flagged windows only | IP addresses, ports, protocols, packet/byte counts |
 | Evidence `.pcap` | incidents at/above `NETAI_EVIDENCE` | IP + TCP/UDP/ICMP headers (addresses, ports, flags). **No payload, no MAC addresses** |
-| Alerts | when sent | summary with addresses (set `NETAI_ALERT_INCLUDE_HOSTS=0` to remove them from email/Slack) |
+| Alerts | when sent | summary with addresses and device names (set `NETAI_ALERT_INCLUDE_HOSTS=0` to remove them from email/Slack) |
+| Settings | when saved | mail server login (and a local model server key, if you set one), stored **unencrypted** in `data/netai.db` on this computer (never shown in the dashboard). Use an app password, and protect the computer and the `data/` folder |
+| Reports | when created (newest 200 kept) | the findings, tables and Aya's review shown in the report |
+| Scan results | after every nmap scan (newest 200 scans kept) | each device found: IP, hostname, MAC/vendor, OS guess, open ports and services |
+| Device inventory | always (passive discovery, scans, name lookups) | internal IP addresses, names, MAC/vendor, OS guess, open ports. Internet servers are not listed |
 
 IP addresses and packet headers count as personal data in many workplaces. Set `NETAI_EVIDENCE=off` if you are not allowed to keep them, and follow your organisation's retention policy. Evidence and the database stay on this machine (`data/`, ignored by git).
 
@@ -177,6 +232,13 @@ src/netai_detector/
   advisor.py      Offline response playbooks filled in with real hosts/ports
   evidence.py     Headers-only .pcap evidence files
   alerts.py       Desktop, email and Slack alerts
+  devices.py      Device names (labels, NetBIOS, reverse DNS)
+  scanner.py      nmap subnet/VLAN discovery and port scans
+  passive.py      SPAN/mirror passive device and service discovery
+  notifications.py  Dashboard-editable email/AI settings and the email sender
+  notifier.py     Report service and background email notifier (new devices, schedules)
+  reports.py      Report findings, grading and HTML/text rendering
+  aya.py          Aya, the local AI analyst (built-in rules, Ollama, OpenAI-compatible servers)
   api.py          FastAPI API
   dashboard.py    Dashboard page
   capture.py      Live capture (Scapy or built-in raw socket) + PCAP extraction

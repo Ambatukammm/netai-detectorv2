@@ -97,6 +97,13 @@ SMTP_TLS = os.getenv("NETAI_SMTP_TLS", "starttls").strip().lower()   # starttls 
 ALERT_EMAIL_TO = [a.strip() for a in os.getenv("NETAI_ALERT_EMAIL_TO", "").split(",") if a.strip()]
 DASHBOARD_URL = os.getenv("NETAI_DASHBOARD_URL", "").strip()  # link put in alerts (optional)
 
+# --- Devices, network scanning and SPAN ------------------------------------------------------
+RESOLVE_NAMES = env_bool("NETAI_RESOLVE_NAMES", True)       # reverse DNS + NetBIOS lookups
+NMAP_PATH = os.getenv("NETAI_NMAP", "").strip()             # empty = find nmap automatically
+SCAN_MAX_MINUTES = max(1, env_int("NETAI_SCAN_MAX_MINUTES", 60))
+PASSIVE_DISCOVERY = env_bool("NETAI_PASSIVE_DISCOVERY", True)  # learn devices/services from traffic
+PROMISCUOUS = env_bool("NETAI_PROMISCUOUS", True)           # see mirrored (SPAN) traffic, not just ours
+
 
 def hand_back_to_user(path: Path) -> None:
     """If we were started through sudo, give files we create back to the real user."""
@@ -106,3 +113,10 @@ def hand_back_to_user(path: Path) -> None:
             os.chown(path, int(uid), int(gid))
     except OSError:
         pass
+
+# --- Aya (local AI analyst for reports) -----------------------------------------------------
+# builtin = no setup; ollama / openai = a local model server (also settable on the Settings page).
+AYA_ENGINE = os.getenv("NETAI_AYA_ENGINE", "builtin").strip().lower()
+AYA_URL = os.getenv("NETAI_AYA_URL", "").strip()
+AYA_MODEL = os.getenv("NETAI_AYA_MODEL", "").strip()
+AYA_TIMEOUT = max(10, env_int("NETAI_AYA_TIMEOUT", 300))   # local models on a CPU can be slow

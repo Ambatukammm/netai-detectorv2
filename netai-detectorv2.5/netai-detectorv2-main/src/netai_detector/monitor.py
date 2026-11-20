@@ -28,12 +28,24 @@ from .alerts import Alerter, channels
 from .capture import CaptureUnavailable, iter_pcap_windows, open_live
 from .demo import DemoSource
 from .detection import AnomalyDetector
+from .devices import DeviceDirectory
 from .evidence import EvidenceStore
 from .forensics import analyse, unknown_hint
 from .incidents import SEVERITY_RANK, IncidentTracker
+from .notifications import NotificationSettings
+from .passive import PassiveDiscovery
 from .storage import EventStore
 
 EVIDENCE_LEVELS = {"all": 0, "low": 0, "medium": 1, "high": 2}
+
+
+def incident_ips(incident: dict, top: int = 10) -> set[str]:
+    """Addresses worth naming in an incident: its main flows, senders, receivers and hint hosts."""
+    c = incident.get("culprits") or {}
+    ips = {ip for f in (c.get("top_flows") or [])[:top] for ip in (f.get("src"), f.get("dst"))}
+    ips |= {r.get("ip") for key in ("top_sources", "top_destinations") for r in (c.get(key) or [])[:top]}
+    ips |= {h.get(k) for h in incident.get("hints") or [] for k in ("attacker", "target")}
+    return {ip for ip in ips if ip}
 PENDING_WINDOWS = 5   # flagged windows kept in memory until an incident qualifies for evidence
 
 log = logging.getLogger("netai")
@@ -50,7 +62,8 @@ class Monitor:
                  source_factory: Callable[[], object] | None = None,
                  retrain_every: float = config.RETRAIN_HOURS * 3600,
                  evidence: EvidenceStore | None = None, evidence_level: str = config.EVIDENCE,
-                 alerter: Alerter | None = None, tracker: IncidentTracker | None = None):
+                 alerter: Alerter | None = None, tracker: IncidentTracker | None = None,
+                 devices: DeviceDirectory | None = None, passive: PassiveDiscovery | None = None):
         self.store, self.model_path, self.baseline_path = store, Path(model_path), Path(baseline_path)
         self.mode, self.interface, self.learn_windows = mode, interface, max(20, learn_windows)
         self._source_factory = source_factory  # tests inject fake sources here
@@ -62,7 +75,12 @@ class Monitor:
         self.tracker = tracker or IncidentTracker(store)
         self.evidence = evidence or EvidenceStore()
         self.evidence_level = evidence_level if evidence_level in EVIDENCE_LEVELS else "off"
-        self.alerter = alerter or Alerter(on_error=self._warn)
+        self.devices = devices or DeviceDirectory(store, enabled=config.RESOLVE_NAMES)
+        self.passive = passive or PassiveDiscovery(store, enabled=config.PASSIVE_DISCOVERY)
+        self.notify_settings = NotificationSettings(store)
+        self.alerter = alerter or Alerter(on_error=self._warn, settings=self.notify_settings)
+        if self.alerter.name_lookup is None:
+            self.alerter.name_lookup = lambda ips: self.devices.names_for(ips, resolve=False)
         self._pending: dict[int, list] = {}     # incident id -> packets awaiting the evidence decision
         self._lock = threading.RLock()
         self._stop, self._paused, self._relearn = threading.Event(), threading.Event(), threading.Event()
@@ -115,8 +133,9 @@ class Monitor:
                           "training_samples": meta.get("training_samples"),
                           "simulated": bool(meta.get("synthetic"))}
         state["paused"] = self._paused.is_set()
-        state["investigation"] = {"evidence": self.evidence_level, "alerts": channels(),
+        state["investigation"] = {"evidence": self.evidence_level, "alerts": channels(self.alerter.settings),
                                   "alerts_sent": self.alerter.sent}
+        state["passive"] = self.passive.status()
         return state
 
     @property
@@ -161,6 +180,7 @@ class Monitor:
                 if source is not None:
                     source.close()
                 self._end_incidents("monitoring paused, stopped or restarted")
+                self.passive.flush()
         self._set(phase="stopped", message="Stopped.")
 
     def _session(self, source) -> None:
@@ -223,6 +243,7 @@ class Monitor:
         for vector in source.windows(halt):
             if halt.is_set():
                 return  # paused, stopped or restarted; partial data is discarded
+            self._observe(source)
             samples.append(vector)
             self._set(progress={"done": len(samples), "target": self.learn_windows})
             if len(samples) >= self.learn_windows:
@@ -285,6 +306,7 @@ class Monitor:
         if source.kind == "demo":
             details["simulated_scenario"] = getattr(source, "last_label", "normal")
         ts = time.time()
+        self._observe(source)
         if result["is_anomaly"]:
             details["top_features"] = detector.explain(vector)
             packets = list(getattr(source, "last_packets", None) or [])
@@ -314,6 +336,7 @@ class Monitor:
             analysis["hints"] = [unknown_hint(details.get("top_features"))]
         outcome = self.tracker.anomaly(label, ts, result, analysis, details.get("top_features"))
         incident = outcome["incident"]
+        self.devices.want(incident_ips(incident))       # names are looked up in the background
         details["culprits"] = analysis["culprits"]
         details["hints"] = [{k: h.get(k) for k in ("type", "title", "confidence", "evidence")}
                             for h in analysis["hints"]]
@@ -347,6 +370,14 @@ class Monitor:
                 self.store.clear_evidence(gone)
         except OSError as exc:
             self._warn(f"Could not save evidence file ({exc}). Detection continues without it.")
+
+    def _observe(self, source) -> None:
+        """Feed real traffic to passive discovery (never the simulated demo)."""
+        if source.kind == "live":
+            try:
+                self.passive.observe(getattr(source, "last_packets", None))
+            except Exception as exc:
+                log.debug("Passive discovery error: %s", exc)
 
     def _end_incidents(self, reason: str) -> None:
         for rec in self.tracker.close_all(reason):

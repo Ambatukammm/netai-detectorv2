@@ -5,6 +5,7 @@ sees your internal addresses). It is advice for a person to read: nothing here i
 nothing is blocked automatically, because auto-blocking can cut off legitimate users.
 """
 from __future__ import annotations
+import re
 from .config import TRUSTED_HOSTS
 from .forensics import ATTACK_TITLES, AUTH_PORTS, is_internal, port_name
 
@@ -50,8 +51,29 @@ def _ext_block(ip: str) -> str:
             "Windows/Linux machine with a command below. On a Mac, use the router.")
 
 
-def advise(incident: dict) -> dict:
-    """Return a response plan for an incident dict (as stored by IncidentStore)."""
+def with_names(text: str, names: dict[str, str] | None) -> str:
+    """Write the first mention of each named address as "IP (name)"."""
+    for ip, name in (names or {}).items():
+        if name and name != ip:
+            text = re.sub(rf"(?<![\d.]){re.escape(ip)}(?![\d.])", f"{ip} ({name})", text, count=1)
+    return text
+
+
+def advise(incident: dict, names: dict[str, str] | None = None) -> dict:
+    """Return a response plan for an incident dict (as stored by IncidentStore).
+    `names` maps IP -> device name; prose mentions get the name, commands keep the bare IP."""
+    plan = _advise(incident)
+    if names:
+        plan["summary"] = with_names(plan["summary"], names)
+        plan["steps"] = [{**s, "items": [with_names(i, names) for i in s["items"]]} for s in plan["steps"]]
+        if plan.get("trusted_note"):
+            plan["trusted_note"] = with_names(plan["trusted_note"], names)
+    plan["attacker_name"] = (names or {}).get(plan.get("attacker"))
+    plan["target_name"] = (names or {}).get(plan.get("target"))
+    return plan
+
+
+def _advise(incident: dict) -> dict:
     hints = incident.get("hints") or []
     primary = hints[0] if hints else {"type": "unknown", "confidence": "low"}
     kind = primary.get("type", "unknown")

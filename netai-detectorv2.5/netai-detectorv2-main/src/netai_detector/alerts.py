@@ -5,7 +5,6 @@ configured. Each incident alerts once when it opens at or above NETAI_ALERT_MIN_
 more if it escalates. Sending happens on a background thread so it can never stall monitoring.
 """
 from __future__ import annotations
-from email.message import EmailMessage
 import json
 import logging
 import os
@@ -13,21 +12,22 @@ import queue
 import re
 import shutil
 import smtplib
-import ssl
 import subprocess
 import sys
 import threading
 import urllib.request
 from . import config
 from .forensics import ATTACK_TITLES
+from .notifications import NotificationSettings, email_ready, send_email
 
 log = logging.getLogger("netai")
 SEVERITY_RANK = {"low": 0, "medium": 1, "high": 2}
 _IP = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 
 
-def format_alert(incident: dict, reason: str = "new", include_hosts: bool = True) -> tuple[str, str]:
-    """(title, body) in plain text."""
+def format_alert(incident: dict, reason: str = "new", include_hosts: bool = True,
+                 names: dict[str, str] | None = None) -> tuple[str, str]:
+    """(title, body) in plain text. Device names are added next to addresses when known."""
     sev = incident.get("peak_severity", "?").upper()
     kind = ATTACK_TITLES.get(incident.get("attack_type", "unknown"), "Unusual traffic")
     verb = "escalated to" if reason == "escalated" else "detected:"
@@ -43,6 +43,10 @@ def format_alert(incident: dict, reason: str = "new", include_hosts: bool = True
     if flows:
         f = flows[0]
         lines.append(f"Main traffic: {f['src']} → {f['dst']} ({f['proto'].upper()}, {f['packets']} packets)")
+        if names and include_hosts:
+            known = [f"{ip} = {names[ip]}" for ip in (f["src"], f["dst"]) if names.get(ip)]
+            if known:
+                lines.append("Devices: " + ", ".join(known))
     if str(incident.get("source", "")).startswith("demo"):
         lines.append("(This is SIMULATED demo traffic.)")
     if config.DASHBOARD_URL:
@@ -93,43 +97,37 @@ def _slack(title: str, body: str) -> None:
             raise RuntimeError(f"Slack answered {resp.status}")
 
 
-def _email(title: str, body: str) -> None:
-    msg = EmailMessage()
-    msg["Subject"], msg["From"], msg["To"] = title, config.SMTP_FROM, ", ".join(config.ALERT_EMAIL_TO)
-    msg.set_content(body + "\n\n-- NetAI Detector")
-    ctx = ssl.create_default_context()
-    if config.SMTP_TLS == "ssl":
-        server = smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT, timeout=15, context=ctx)
-    else:
-        server = smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=15)
-    with server:
-        if config.SMTP_TLS == "starttls":
-            server.starttls(context=ctx)
-        if config.SMTP_USER:
-            server.login(config.SMTP_USER, config.SMTP_PASSWORD)
-        server.send_message(msg)
+def _email(title: str, body: str, settings: dict | None = None) -> None:
+    s = settings or NotificationSettings().get()
+    send_email(s, title, body, smtp_factory=smtplib.SMTP, ssl_factory=smtplib.SMTP_SSL)
 
 
-def channels() -> dict:
+def channels(settings: NotificationSettings | None = None) -> dict:
     """Which channels are configured (never includes secrets)."""
+    s = (settings or NotificationSettings()).get()
     return {"desktop": config.ALERT_DESKTOP,
-            "email": bool(config.SMTP_HOST and config.ALERT_EMAIL_TO and config.SMTP_FROM),
+            "email": email_ready(s) and bool(s.get("notify_incidents")),
             "slack": bool(config.SLACK_WEBHOOK),
-            "min_severity": config.ALERT_MIN_SEVERITY,
-            "include_hosts_in_remote": config.ALERT_INCLUDE_HOSTS}
+            "min_severity": s.get("min_severity", "high"),
+            "include_hosts_in_remote": bool(s.get("include_hosts"))}
 
 
 class Alerter:
-    def __init__(self, on_error=None, senders: dict | None = None):
+    def __init__(self, on_error=None, senders: dict | None = None, name_lookup=None,
+                 settings: NotificationSettings | None = None):
         self.on_error = on_error or (lambda msg: log.warning(msg))
-        self.senders = senders or {"desktop": _desktop, "email": _email, "slack": _slack}
+        self.settings = settings or NotificationSettings()
+        self.name_lookup = name_lookup     # callable(ips) -> {ip: name}, optional
+        self.senders = senders if senders is not None else {
+            "desktop": _desktop, "slack": _slack,
+            "email": lambda title, body: _email(title, body, self.settings.get())}
         self.sent = 0
         self._alerted: dict[int, int] = {}       # incident id -> highest severity rank alerted
         self._queue: queue.Queue = queue.Queue(maxsize=100)
         self._thread: threading.Thread | None = None
 
     def _enabled(self) -> list[str]:
-        on = channels()
+        on = channels(self.settings)
         return [name for name in ("desktop", "email", "slack") if on[name] and name in self.senders]
 
     def consider(self, incident: dict, reason: str) -> bool:
@@ -137,7 +135,7 @@ class Alerter:
         if str(incident.get("source", "")).startswith("demo"):
             return False            # simulated attacks are shown on the dashboard only
         rank = SEVERITY_RANK.get(incident.get("peak_severity", "low"), 0)
-        if rank < SEVERITY_RANK.get(config.ALERT_MIN_SEVERITY, 2):
+        if rank < SEVERITY_RANK.get(self.settings.get().get("min_severity"), 2):
             return False
         iid = int(incident.get("id") or 0)
         if self._alerted.get(iid, -1) >= rank:
@@ -171,10 +169,19 @@ class Alerter:
     def send(self, incident: dict, reason: str = "new") -> dict:
         """Send on every enabled channel now. Returns {channel: "sent" | error message}."""
         results = {}
+        names = {}
+        if self.name_lookup:
+            ips = {ip for f in ((incident.get("culprits") or {}).get("top_flows") or [])[:1]
+                   for ip in (f.get("src"), f.get("dst"))}
+            try:
+                names = self.name_lookup(ips) or {}
+            except Exception:
+                names = {}
+        include_remote = bool(self.settings.get().get("include_hosts"))
         for name in self._enabled():
             remote = name != "desktop"
             title, body = format_alert(incident, reason,
-                                       include_hosts=config.ALERT_INCLUDE_HOSTS or not remote)
+                                       include_hosts=include_remote or not remote, names=names)
             try:
                 self.senders[name](title, body)
                 results[name] = "sent"
