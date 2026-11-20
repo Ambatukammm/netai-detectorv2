@@ -48,7 +48,10 @@ class AnomalyDetector:
         scaled = self.scaler.transform(values)
         scores = -self.model.score_samples(scaled)
         self.threshold = float(np.quantile(scores, 1.0 - contamination))
+        median_score = float(np.median(scores))
         self.metadata = {
+            "median_score": median_score,
+            "score_sigma": float(np.median(np.abs(scores - median_score)) * 1.4826),
             "feature_version": FEATURE_VERSION,
             "feature_names": FEATURE_NAMES,
             "trained_at": datetime.now(timezone.utc).isoformat(),
@@ -83,11 +86,24 @@ class AnomalyDetector:
             "is_anomaly": label == -1 or score > self.threshold,
             "score": score,
             "threshold": self.threshold,
-            "severity": "high" if score > self.threshold * 1.5 else (
-                "medium" if score > self.threshold else "low"
-            ),
+            "severity": self.severity(score),
             "model": self.metadata.get("algorithm", "IsolationForest"),
         }
+
+    HIGH_SIGMAS = 4.5
+
+    def severity(self, score: float) -> str:
+        """low / medium / high. Isolation Forest scores sit in a narrow band (normal traffic about
+        0.45, the threshold about 0.55, strong outliers rarely above 0.75), so the old rule
+        "1.5 x threshold" could practically never be reached. 'high' now means flagged AND at least
+        4.5 robust standard deviations above typical normal traffic. Median and spread are stable
+        even on a small baseline; the threshold (a far-tail quantile) is not."""
+        if score <= self.threshold:
+            return "low"
+        median, sigma = self.metadata.get("median_score"), self.metadata.get("score_sigma")
+        if median is None or not sigma:                       # model saved by an older version
+            return "high" if score >= self.threshold + 0.08 else "medium"
+        return "high" if score >= median + self.HIGH_SIGMAS * sigma else "medium"
 
     def explain(self, features: np.ndarray, top: int = 3) -> list[dict]:
         """The features that deviate most from the training baseline (in standard deviations)."""

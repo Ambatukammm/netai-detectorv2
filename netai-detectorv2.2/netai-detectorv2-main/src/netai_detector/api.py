@@ -12,11 +12,12 @@ import os
 import tempfile
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 from . import __version__
+from .advisor import advise
 from .capture import CaptureUnavailable
-from .config import API_KEY, MAX_PCAP_MB
+from .config import API_KEY, EVIDENCE_DIR, MAX_PCAP_MB
 from .dashboard import DASHBOARD
 from .features import FEATURE_NAMES, FEATURE_VERSION
 from .monitor import Monitor
@@ -90,8 +91,69 @@ def get_features():
 
 
 @app.get("/api/events")
-def get_events(limit: int = Query(100, ge=1, le=500)):
+def get_events(limit: int = Query(100, ge=1, le=500), x_api_key: str | None = Header(default=None)):
+    require_key(x_api_key)  # flagged events include IP addresses
     return {"items": store.recent(limit)}
+
+
+def _evidence_file(incident: dict) -> Path | None:
+    """The incident's evidence file, only if it exists inside the evidence folder."""
+    raw = incident.get("evidence_path")
+    if not raw:
+        return None
+    path = Path(raw).resolve()
+    try:
+        path.relative_to(Path(EVIDENCE_DIR).resolve())
+    except ValueError:
+        return None
+    return path if path.is_file() else None
+
+
+@app.get("/api/incidents")
+def get_incidents(limit: int = Query(50, ge=1, le=500), x_api_key: str | None = Header(default=None)):
+    """Incidents (groups of consecutive flagged windows), newest first."""
+    require_key(x_api_key)
+    items = store.incidents(limit)
+    for item in items:
+        item["evidence_available"] = _evidence_file(item) is not None
+    return {"items": items}
+
+
+@app.get("/api/incidents/{incident_id}")
+def get_incident(incident_id: int, x_api_key: str | None = Header(default=None)):
+    """One incident with the offline advisor's response plan (suggestions only, nothing is run)."""
+    require_key(x_api_key)
+    incident = store.incident(incident_id)
+    if not incident:
+        raise HTTPException(status_code=404, detail="No such incident")
+    evidence = _evidence_file(incident)
+    incident["evidence_available"] = evidence is not None
+    incident["evidence_note"] = (
+        f"Headers-only capture, {incident['evidence_packets']} packets. Open it in Wireshark." if evidence
+        else ("The dropped capture file itself is the evidence." if incident["source"].startswith("pcap:")
+              else "No evidence file for this incident (below the evidence severity setting, "
+                   "turned off, or removed to keep within the size limit)."))
+    incident["plan"] = advise(incident)
+    return incident
+
+
+@app.get("/api/incidents/{incident_id}/evidence")
+def get_evidence(incident_id: int, x_api_key: str | None = Header(default=None)):
+    """Download the headers-only .pcap for an incident."""
+    require_key(x_api_key)
+    incident = store.incident(incident_id)
+    path = _evidence_file(incident) if incident else None
+    if path is None:
+        raise HTTPException(status_code=404, detail="No evidence file for this incident")
+    return FileResponse(path, media_type="application/vnd.tcpdump.pcap", filename=path.name)
+
+
+@app.post("/api/alerts/test")
+async def test_alert(x_api_key: str | None = Header(default=None),
+                     x_requested_with: str | None = Header(default=None)):
+    """Send a test alert on every configured channel and report what happened."""
+    require_control(x_api_key, x_requested_with)
+    return {"results": await run_in_threadpool(monitor.alerter.test)}
 
 
 @app.post("/api/monitor/{action}")

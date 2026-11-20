@@ -68,6 +68,35 @@ MAX_PCAP_MB = env_int("NETAI_MAX_PCAP_MB", 500)
 # Re-learn automatically from recent *normal* traffic this often (0 = never).
 RETRAIN_HOURS = env_int("NETAI_RETRAIN_HOURS", 168)
 
+# --- Investigation ---------------------------------------------------------------------------
+# Consecutive flagged windows are merged into one incident. It closes after this many normal
+# windows in a row, or when nothing has been flagged for INCIDENT_GAP_SECONDS.
+INCIDENT_CLOSE_AFTER = max(1, env_int("NETAI_INCIDENT_CLOSE_AFTER", 3))
+INCIDENT_GAP_SECONDS = max(10, env_int("NETAI_INCIDENT_GAP_SECONDS", 120))
+# Addresses you expect to behave unusually (an authorised scanner, the backup server). Comma list.
+TRUSTED_HOSTS = {h.strip() for h in os.getenv("NETAI_TRUSTED_HOSTS", "").split(",") if h.strip()}
+
+# Evidence: headers-only .pcap files for incidents (payload is cut off, never saved).
+# off = never · high = incidents that reach high severity (default) · medium · all
+EVIDENCE = os.getenv("NETAI_EVIDENCE", "high").strip().lower()
+EVIDENCE_DIR = env_path("NETAI_EVIDENCE_DIR", "data/evidence")
+EVIDENCE_MAX_MB = max(1, env_int("NETAI_EVIDENCE_MAX_MB", 200))
+EVIDENCE_MAX_PACKETS = max(100, env_int("NETAI_EVIDENCE_MAX_PACKETS", 20000))  # per incident
+
+# Alerts. The desktop one is on by default; email and Slack switch on when configured.
+ALERT_MIN_SEVERITY = os.getenv("NETAI_ALERT_MIN_SEVERITY", "high").strip().lower()
+ALERT_DESKTOP = env_bool("NETAI_ALERT_DESKTOP", True)
+ALERT_INCLUDE_HOSTS = env_bool("NETAI_ALERT_INCLUDE_HOSTS", True)  # 0 = leave IPs out of email/Slack
+SLACK_WEBHOOK = os.getenv("NETAI_SLACK_WEBHOOK", "").strip()
+SMTP_HOST = os.getenv("NETAI_SMTP_HOST", "").strip()
+SMTP_PORT = env_int("NETAI_SMTP_PORT", 587)
+SMTP_USER = os.getenv("NETAI_SMTP_USER", "").strip()
+SMTP_PASSWORD = os.getenv("NETAI_SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("NETAI_SMTP_FROM", "").strip() or SMTP_USER
+SMTP_TLS = os.getenv("NETAI_SMTP_TLS", "starttls").strip().lower()   # starttls | ssl | none
+ALERT_EMAIL_TO = [a.strip() for a in os.getenv("NETAI_ALERT_EMAIL_TO", "").split(",") if a.strip()]
+DASHBOARD_URL = os.getenv("NETAI_DASHBOARD_URL", "").strip()  # link put in alerts (optional)
+
 
 def hand_back_to_user(path: Path) -> None:
     """If we were started through sudo, give files we create back to the real user."""

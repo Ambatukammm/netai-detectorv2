@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from typing import Iterator
 import numpy as np
 from .config import WINDOW_FLUSH_SECONDS, WINDOW_PACKETS
+from .evidence import cut_headers
 from .features import extract_window
 
 MIN_WINDOW_PACKETS = 10
@@ -68,6 +69,9 @@ class _QueueSource:
         self.flush_seconds = flush_seconds
         self.dropped = 0
         self._queue: queue.Queue = queue.Queue(maxsize=50_000)
+        # The packets of the window just yielded, so flagged windows can be investigated.
+        self.last_packets: list = []
+        self.last_duration: float | None = None
 
     def _push(self, packet) -> None:
         try:
@@ -89,10 +93,14 @@ class _QueueSource:
             waited = time.monotonic() - started
             if len(buf) >= self.window_packets or (len(buf) >= MIN_WINDOW_PACKETS
                                                   and waited >= self.flush_seconds):
+                duration = window_duration(buf)
                 try:
-                    yield extract_window(buf, window_duration(buf))
+                    vector = extract_window(buf, duration)
                 except ValueError:
-                    pass
+                    vector = None
+                if vector is not None:
+                    self.last_packets, self.last_duration = buf, duration
+                    yield vector
                 buf = []
 
 
@@ -147,10 +155,11 @@ class LiveSource(_QueueSource):
 # ------------------------------------------------------------------ driverless capture
 class ParsedPacket:
     """Just enough of Scapy's packet interface for extract_window()."""
-    __slots__ = ("_layers", "_size", "time")
+    __slots__ = ("_layers", "_size", "time", "raw_headers")
 
-    def __init__(self, size: int, layers: dict, ts: float):
+    def __init__(self, size: int, layers: dict, ts: float, raw_headers: bytes = b""):
         self._layers, self._size, self.time = layers, size, ts
+        self.raw_headers = raw_headers  # IP + TCP/UDP/ICMP headers only; payload is never kept
 
     def haslayer(self, name): return name in self._layers
     def __getitem__(self, name): return self._layers[name]
@@ -175,7 +184,7 @@ def parse_ipv4(data: bytes, ts: float | None = None) -> ParsedPacket | None:
     elif proto == 17 and len(data) >= ihl + 4:
         sport, dport = struct.unpack("!HH", data[ihl:ihl + 4])
         layers["UDP"] = SimpleNamespace(sport=sport, dport=dport)
-    return ParsedPacket(total, layers, ts if ts is not None else time.time())
+    return ParsedPacket(total, layers, ts if ts is not None else time.time(), cut_headers(data))
 
 
 def _default_linux_interface() -> str | None:
@@ -292,27 +301,40 @@ def open_live(interface: str | None = None):
     raise CaptureUnavailable(errors[0])
 
 
-def extract_pcap(path: str | Path, window_packets: int = WINDOW_PACKETS) -> np.ndarray:
-    """Convert an offline capture file into feature windows."""
+def iter_pcap_windows(path: str | Path, window_packets: int = WINDOW_PACKETS):
+    """Yield (feature_vector, packets, duration) for each window of an offline capture file."""
     scapy = _scapy()
-    samples, buffer = [], []
+    buffer: list = []
+    found = False
 
     def flush():
+        duration = window_duration(buffer)
         try:
-            samples.append(extract_window(buffer, window_duration(buffer)))
+            return extract_window(buffer, duration), list(buffer), duration
         except ValueError:
-            pass
-        buffer.clear()
+            return None
 
     with scapy.PcapReader(str(path)) as packets:
         for packet in packets:
             buffer.append(packet)
             if len(buffer) >= window_packets:
-                flush()
+                item = flush()
+                buffer.clear()
+                if item is not None:
+                    found = True
+                    yield item
     if len(buffer) >= MIN_WINDOW_PACKETS:
-        flush()
-    if not samples:
+        item = flush()
+        if item is not None:
+            found = True
+            yield item
+    if not found:
         raise RuntimeError("No usable IPv4 packet windows found in that capture file")
+
+
+def extract_pcap(path: str | Path, window_packets: int = WINDOW_PACKETS) -> np.ndarray:
+    """Convert an offline capture file into feature windows."""
+    samples = [vector for vector, _, _ in iter_pcap_windows(path, window_packets)]
     return np.asarray(samples, dtype=np.float32)
 
 

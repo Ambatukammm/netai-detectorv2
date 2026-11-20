@@ -2,7 +2,9 @@ import time
 import numpy as np
 import pytest
 from netai_detector import monitor as monitor_module
-from netai_detector.demo import DemoSource, synth_window
+from netai_detector.alerts import Alerter
+from netai_detector.demo import DemoSource, synth_packets, synth_window
+from netai_detector.evidence import EvidenceStore
 from netai_detector.detection import AnomalyDetector
 from netai_detector.features import FEATURE_NAMES
 from netai_detector.monitor import Monitor
@@ -17,6 +19,8 @@ class LiveLike(DemoSource):
 
 def make(tmp_path, source=lambda: DemoSource(learn_pace=0, monitor_pace=0.01, seed=1), **kw):
     kw.setdefault("retrain_every", 0)
+    kw.setdefault("evidence", EvidenceStore(tmp_path / "evidence"))
+    kw.setdefault("alerter", Alerter(senders={}))
     store = EventStore(tmp_path / "e.db")
     return Monitor(store, tmp_path / "m.joblib", tmp_path / "b.npz", mode="auto",
                    learn_windows=20, source_factory=source, **kw), store
@@ -133,24 +137,37 @@ def test_demo_scenarios_are_detectable_and_normal_mostly_is_not():
     assert false_alarms <= 10
 
 
+def fake_pcap(rng, kinds):
+    """Stand-in for iter_pcap_windows: [(vector, packets, seconds)] from simulated traffic."""
+    from netai_detector.features import extract_window
+    out = []
+    for kind in kinds:
+        packets, seconds, _ = synth_packets(rng, anomaly=kind)
+        out.append((extract_window(packets, seconds), packets, seconds))
+    return out
+
+
 def test_pcap_drop_trains_when_no_real_model_then_scores(tmp_path, monkeypatch):
     rng = np.random.default_rng(4)
-    windows = np.stack([synth_window(rng)[0] for _ in range(30)])
-    monkeypatch.setattr(monitor_module, "extract_pcap", lambda path: windows)
+    normal = fake_pcap(rng, [None] * 30)
+    monkeypatch.setattr(monitor_module, "iter_pcap_windows", lambda path: iter(normal))
     mon, store = make(tmp_path)
     first = mon.analyze_pcap("x.pcap", "x.pcap")
     assert first["action"] == "trained" and mon.model_ready
-    scan = np.stack([synth_window(rng, anomaly="portscan")[0] for _ in range(3)] + [windows[0]])
-    monkeypatch.setattr(monitor_module, "extract_pcap", lambda path: scan)
+    scan = fake_pcap(rng, ["portscan"] * 3) + normal[:1]
+    monkeypatch.setattr(monitor_module, "iter_pcap_windows", lambda path: iter(scan))
     second = mon.analyze_pcap("y.pcap", "y.pcap")
     assert second["action"] == "analyzed" and second["anomalies"] >= 3
     assert store.recent(1)[0]["source"] == "pcap:y.pcap"
+    assert len(second["incidents"]) == 1                      # 3 scan windows = one incident
+    inc = store.incident(second["incidents"][0])
+    assert inc["status"] == "closed" and inc["attack_type"] == "port_scan" and inc["windows"] == 3
 
 
 def test_pcap_too_small_for_baseline(tmp_path, monkeypatch):
     rng = np.random.default_rng(4)
-    monkeypatch.setattr(monitor_module, "extract_pcap",
-                        lambda path: np.stack([synth_window(rng)[0] for _ in range(5)]))
+    small = fake_pcap(rng, [None] * 5)
+    monkeypatch.setattr(monitor_module, "iter_pcap_windows", lambda path: iter(small))
     mon, _ = make(tmp_path)
     with pytest.raises(ValueError, match="at least 20"):
         mon.analyze_pcap("x.pcap", "x.pcap")

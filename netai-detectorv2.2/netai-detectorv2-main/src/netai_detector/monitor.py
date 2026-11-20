@@ -7,6 +7,8 @@ Lifecycle (runs in one background thread, started with the web app):
      train the model, save it, and continue to monitoring.
   3. Score every new window and record it as an event. Anomalies include the features that
      deviated most from the baseline, to speed up triage.
+  4. Investigate flagged windows: who was talking to whom (culprit summary), what it looks like
+     (attack-type hints), grouped into incidents, with headers-only evidence files and alerts.
 
 If live capture cannot start (no admin rights, no Npcap/libpcap) and there is no real model yet, a
 clearly-labelled simulated demo runs instead, so the dashboard is never an empty page. It is
@@ -22,10 +24,17 @@ import threading
 import time
 import numpy as np
 from . import config
-from .capture import CaptureUnavailable, extract_pcap, open_live
+from .alerts import Alerter, channels
+from .capture import CaptureUnavailable, iter_pcap_windows, open_live
 from .demo import DemoSource
 from .detection import AnomalyDetector
+from .evidence import EvidenceStore
+from .forensics import analyse, unknown_hint
+from .incidents import SEVERITY_RANK, IncidentTracker
 from .storage import EventStore
+
+EVIDENCE_LEVELS = {"all": 0, "low": 0, "medium": 1, "high": 2}
+PENDING_WINDOWS = 5   # flagged windows kept in memory until an incident qualifies for evidence
 
 log = logging.getLogger("netai")
 
@@ -39,7 +48,9 @@ class Monitor:
                  baseline_path: Path = config.BASELINE_PATH, mode: str = config.MODE,
                  interface: str | None = config.INTERFACE, learn_windows: int = config.LEARN_WINDOWS,
                  source_factory: Callable[[], object] | None = None,
-                 retrain_every: float = config.RETRAIN_HOURS * 3600):
+                 retrain_every: float = config.RETRAIN_HOURS * 3600,
+                 evidence: EvidenceStore | None = None, evidence_level: str = config.EVIDENCE,
+                 alerter: Alerter | None = None, tracker: IncidentTracker | None = None):
         self.store, self.model_path, self.baseline_path = store, Path(model_path), Path(baseline_path)
         self.mode, self.interface, self.learn_windows = mode, interface, max(20, learn_windows)
         self._source_factory = source_factory  # tests inject fake sources here
@@ -48,6 +59,11 @@ class Monitor:
         self._reservoir: list = []              # representative sample of recent normal windows
         self._seen_normal = 0
         self.detector: AnomalyDetector | None = None
+        self.tracker = tracker or IncidentTracker(store)
+        self.evidence = evidence or EvidenceStore()
+        self.evidence_level = evidence_level if evidence_level in EVIDENCE_LEVELS else "off"
+        self.alerter = alerter or Alerter(on_error=self._warn)
+        self._pending: dict[int, list] = {}     # incident id -> packets awaiting the evidence decision
         self._lock = threading.RLock()
         self._stop, self._paused, self._relearn = threading.Event(), threading.Event(), threading.Event()
         self._halt = threading.Event()
@@ -99,6 +115,8 @@ class Monitor:
                           "training_samples": meta.get("training_samples"),
                           "simulated": bool(meta.get("synthetic"))}
         state["paused"] = self._paused.is_set()
+        state["investigation"] = {"evidence": self.evidence_level, "alerts": channels(),
+                                  "alerts_sent": self.alerter.sent}
         return state
 
     @property
@@ -142,6 +160,7 @@ class Monitor:
             finally:
                 if source is not None:
                     source.close()
+                self._end_incidents("monitoring paused, stopped or restarted")
         self._set(phase="stopped", message="Stopped.")
 
     def _session(self, source) -> None:
@@ -232,6 +251,7 @@ class Monitor:
                        "If the network was under attack or doing something odd then, use Relearn baseline.")
         if kind != "demo":
             self.store.delete_by_source("demo")
+            self._forget_demo_incidents()
         log.info("Model trained on %d windows (%s)", len(samples), kind)
 
     def _monitor(self, source) -> None:
@@ -261,11 +281,20 @@ class Monitor:
         except ValueError:
             return
         details: dict = {"interface": source.interface}
-        if result["is_anomaly"]:
-            details["top_features"] = detector.explain(vector)
+        label = "demo" if source.kind == "demo" else f"live:{source.interface}"[:100]
         if source.kind == "demo":
             details["simulated_scenario"] = getattr(source, "last_label", "normal")
-        label = "demo" if source.kind == "demo" else f"live:{source.interface}"[:100]
+        ts = time.time()
+        if result["is_anomaly"]:
+            details["top_features"] = detector.explain(vector)
+            packets = list(getattr(source, "last_packets", None) or [])
+            incident = self._investigate(result, details, packets,
+                                         getattr(source, "last_duration", None), label, ts)
+            self._collect_evidence(incident, packets)
+            self.alerter.consider(incident, "new")
+        else:
+            for closed in self.tracker.normal(label, ts):
+                self._pending.pop(int(closed.get("id") or 0), None)
         self.store.add_event(result, label, details)
         if not result["is_anomaly"]:
             self._remember_normal(vector)
@@ -275,6 +304,64 @@ class Monitor:
             self._state["last_window_at"] = now
             if result["is_anomaly"]:
                 self._state["last_anomaly_at"] = now
+
+    # ----------------------------------------------------------------- investigation
+    def _investigate(self, result: dict, details: dict, packets: list, duration, label: str,
+                     ts: float) -> dict:
+        """Culprit summary + hints for a flagged window, merged into the open incident."""
+        analysis = analyse(packets, duration) if packets else {"culprits": {}, "hints": []}
+        if not analysis["hints"]:
+            analysis["hints"] = [unknown_hint(details.get("top_features"))]
+        outcome = self.tracker.anomaly(label, ts, result, analysis, details.get("top_features"))
+        incident = outcome["incident"]
+        details["culprits"] = analysis["culprits"]
+        details["hints"] = [{k: h.get(k) for k in ("type", "title", "confidence", "evidence")}
+                            for h in analysis["hints"]]
+        details["incident_id"] = incident["id"]
+        return incident
+
+    def _collect_evidence(self, incident: dict, packets: list) -> None:
+        """Save headers-only packets once the incident reaches the configured severity.
+        Flagged windows seen before that are held briefly in memory so the start isn't lost."""
+        if self.evidence_level == "off" or not packets:
+            return
+        iid = int(incident["id"])
+        still_open = {int(r["id"]) for r in self.tracker.open_incidents() if r.get("id")}
+        for stale in [k for k in self._pending if k not in still_open]:
+            del self._pending[stale]          # incident ended without reaching evidence severity
+        if SEVERITY_RANK.get(incident["peak_severity"], 0) < EVIDENCE_LEVELS[self.evidence_level]:
+            held = self._pending.setdefault(iid, [])
+            held.append(packets)
+            del held[:-PENDING_WINDOWS]
+            return
+        try:
+            if not incident.get("evidence_path"):
+                tag = "demo" if str(incident["source"]).startswith("demo") else ""
+                incident["evidence_path"] = str(self.evidence.path_for(iid, tag))
+            path = incident["evidence_path"]
+            for held in self._pending.pop(iid, []) + [packets]:
+                incident["evidence_packets"] += self.evidence.append(path, held,
+                                                                     incident["evidence_packets"])
+            self.store.save_incident(incident)
+            for gone in self.evidence.enforce_cap(keep={path}):
+                self.store.clear_evidence(gone)
+        except OSError as exc:
+            self._warn(f"Could not save evidence file ({exc}). Detection continues without it.")
+
+    def _end_incidents(self, reason: str) -> None:
+        for rec in self.tracker.close_all(reason):
+            self._pending.pop(int(rec.get("id") or 0), None)
+
+    def _forget_demo_incidents(self) -> None:
+        """Real traffic has replaced the demo: remove simulated incidents and their files."""
+        self.tracker.close_all("demo replaced by live capture", source="demo")
+        for inc in self.store.incidents(500):
+            if inc["source"] == "demo" and inc.get("evidence_path"):
+                try:
+                    Path(inc["evidence_path"]).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        self.store.delete_incidents_by_source("demo")
 
     # ----------------------------------------------------------------- scheduled retraining
     def _remember_normal(self, vector: np.ndarray, cap: int = 1000) -> None:
@@ -322,22 +409,36 @@ class Monitor:
 
     # ----------------------------------------------------------------- PCAP drop
     def analyze_pcap(self, path: str | Path, name: str, as_baseline: bool = False) -> dict:
-        """Handle a dropped capture file: train from it if we have no real model, otherwise score it."""
-        windows = extract_pcap(path)
+        """Handle a dropped capture file: train from it if we have no real model, otherwise score it.
+        Flagged windows are investigated and grouped into incidents like live traffic. No evidence
+        file is written: the dropped capture itself is the evidence."""
         if as_baseline or not self._real_model():
+            windows = np.asarray([v for v, _, _ in iter_pcap_windows(path)], dtype=np.float32)
             if len(windows) < 20:
                 raise ValueError(f"That capture only produced {len(windows)} windows; at least 20 "
                                  "(about 2,000 IPv4 packets) are needed to learn a baseline.")
             self._train(windows, "pcap")
             return {"action": "trained", "windows": int(len(windows)),
                     "message": f"Learned a baseline from {len(windows)} windows in {name}."}
-        anomalies = 0
-        for vector in windows:
-            result = self.detector.predict(vector)
+        label = f"pcap:{name}"[:100]
+        detector, count, anomalies, incident_ids = self.detector, 0, 0, set()
+        for vector, packets, duration in iter_pcap_windows(path):
+            count += 1
+            result = detector.predict(vector)
             details = {"file": name}
+            try:
+                ts = float(packets[0].time)
+            except (AttributeError, IndexError, TypeError, ValueError):
+                ts = time.time()
             if result["is_anomaly"]:
                 anomalies += 1
-                details["top_features"] = self.detector.explain(vector)
-            self.store.add_event(result, f"pcap:{name}"[:100], details)
-        return {"action": "analyzed", "windows": int(len(windows)), "anomalies": anomalies,
-                "message": f"Analysed {len(windows)} windows from {name}: {anomalies} flagged as anomalous."}
+                details["top_features"] = detector.explain(vector)
+                incident_ids.add(self._investigate(result, details, packets, duration, label, ts)["id"])
+            else:
+                self.tracker.normal(label, ts)
+            self.store.add_event(result, label, details)
+        self.tracker.close_all("end of capture file", source=label)
+        inc = f", grouped into {len(incident_ids)} incident(s)" if incident_ids else ""
+        return {"action": "analyzed", "windows": count, "anomalies": anomalies,
+                "incidents": sorted(incident_ids),
+                "message": f"Analysed {count} windows from {name}: {anomalies} flagged as anomalous{inc}."}

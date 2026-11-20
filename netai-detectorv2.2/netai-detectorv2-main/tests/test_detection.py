@@ -40,3 +40,15 @@ def test_clean_baseline_is_barely_trimmed():
     detector = AnomalyDetector()
     detector.fit(np.stack([synth_window(rng)[0] for _ in range(60)]))
     assert detector.metadata["trimmed_fraction"] <= 0.10
+
+
+def test_severity_can_reach_high_for_attacks_but_rarely_for_normal_traffic():
+    from netai_detector.demo import SCENARIOS, synth_window
+    rng = np.random.default_rng(3)
+    detector = AnomalyDetector()
+    detector.fit(np.stack([synth_window(rng)[0] for _ in range(60)]))
+    assert "median_score" in detector.metadata
+    severities = [detector.predict(synth_window(rng, anomaly=s)[0])["severity"] for s in SCENARIOS]
+    assert "low" not in severities and severities.count("high") >= len(SCENARIOS) - 2
+    normal = [detector.predict(synth_window(rng)[0])["severity"] for _ in range(200)]
+    assert normal.count("high") == 0

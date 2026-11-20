@@ -19,11 +19,19 @@
 | **Train** | An *Isolation Forest* learns the shape of normal traffic. This model is a way of spotting points that are unusually easy to separate from the crowd. It is saved to disk | Next start-up skips learning |
 | **Monitor** | Every new window gets an anomaly score, a severity (low/medium/high) and a record in a local database | The actual detection |
 | **Explain** | For flagged windows it lists the features that deviated most, e.g. "syn_ratio +9.8 standard deviations" | Tells the analyst *why*, so they can investigate (a port scan looks different from a flood) |
+| **Investigate** | For flagged windows only, it reads packet *headers* to list who talked to whom, on which ports, how much, and guesses the attack type (port scan, flood, brute-force, data exfiltration, DNS tunnelling…) | So you know *who* and *where*, not just *that* something happened |
+| **Incidents** | Flagged windows that belong together become one incident with a start, end, hosts and peak severity. Unrelated attacks at the same time are kept apart | One attack is one row, not forty |
+| **Advise** | Each incident gets a step-by-step plan (confirm, contain, investigate, prevent) with the real addresses filled in and copy-paste firewall commands with undo. It runs offline; nothing is blocked automatically | Turns an alert into actions |
+| **Evidence** | High-severity incidents are saved as a `.pcap` file with headers only (contents cut off) to open in Wireshark | Proof, and the details for deeper investigation |
+| **Alert** | Desktop notification, plus email/Slack if set up | Someone finds out without watching the screen |
 | **Refresh** | Weekly, retrains on recent traffic that was *not* flagged | The network changes over time |
 | **Dashboard** | Shows phase, progress, events and reasons; buttons to Pause or Relearn; drag-and-drop for `.pcap` files | Everything in one place |
 
 ## When live capture isn't possible
 It tries three methods in order: **Scapy**, then a **built-in capture** (no driver needed), then a clearly labelled **simulated demo**. The dashboard always says which one is active and why.
+
+## Why the "AI advisor" is offline
+The response plans come from built-in playbooks, not a cloud AI service. Sending your internal addresses to an outside service would undo the privacy-first design, and the playbooks work with no internet. A cloud AI model could be added later as an opt-in.
 
 ## What it is *not*
 - A flagged window means **unusual**, not **malicious**. A big software update can look odd too. Validate alerts.
@@ -31,8 +39,8 @@ It tries three methods in order: **Scapy**, then a **built-in capture** (no driv
 - Only monitor networks you own or are authorised to monitor.
 
 ## Evidence it works (on the built-in simulated traffic)
-Simulated port scans, floods and data-exfiltration windows were flagged 100% of the time, with roughly 3-5% false alarms on normal traffic, even when 10-20% of the learning data was attack traffic. Real networks will differ; this is a test of the logic, not a guarantee.
+Seven simulated attack types (port scan, network sweep, SYN flood, UDP flood, login brute-force, data exfiltration, DNS tunnelling) are each flagged and given the right attack-type hint in the automated tests; across 20 random baselines about 80% of attack windows scored *high* on the model alone (the rest are raised to high by the pattern match), and no normal window did. Earlier tests: port scans, floods and data-exfiltration windows were flagged 100% of the time, with roughly 3-5% false alarms on normal traffic, even when 10-20% of the learning data was attack traffic. Real networks will differ; this is a test of the logic, not a guarantee.
 
 ## What has and hasn't been tested
-Tested: the learn/train/monitor cycle, relearning, pause, demo-to-live switch, PCAP drops, retention, packet parsing, and real loopback capture with the built-in capture on Linux (21 automated tests).
-**Not yet tested on real hardware:** Scapy capture, Windows raw-socket capture, and the Windows administrator prompt. Run it once on the target machine.
+Tested: the learn/train/monitor cycle, relearning, pause, demo-to-live switch, PCAP drops, retention, packet parsing, real loopback capture with the built-in capture on Linux, culprit summaries, attack hints, incident grouping, the advisor, evidence files (including that payloads are never written), and alerts with simulated email/Slack servers (62 automated tests, plus 5 API tests that run in CI).
+**Not yet tested on real hardware:** Scapy capture, Windows raw-socket capture, the Windows administrator prompt, desktop notifications on each OS, and opening an evidence file in Wireshark itself. Run it once on the target machine and press *Send test alert*.

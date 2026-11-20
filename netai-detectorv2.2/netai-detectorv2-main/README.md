@@ -1,7 +1,7 @@
 # NetAI Detector
 
 **Cross-platform network anomaly detection and monitoring toolkit.**  
-**Made by Ruel · Version 2.1.0**
+**Made by Ruel · Version 2.2.0**
 
 NetAI Detector is an independent cybersecurity project designed to help inspect network traffic, build a baseline of normal activity, identify statistically unusual traffic windows, and review detection events through a local web dashboard.
 
@@ -12,7 +12,12 @@ NetAI Detector is an independent cybersecurity project designed to help inspect 
 - **Fully automatic:** start it and it learns your network, trains the model and monitors live traffic. No API calls, no CLI commands.
 - **One-click launcher** for Windows, Linux and macOS (Python 3.10+). It creates its own environment, installs dependencies and asks for the administrator rights packet capture needs.
 - Live status dashboard: learning progress, current phase, warnings, and *why* each anomaly was flagged (the features that deviated most from normal).
-- Drag-and-drop PCAP analysis in the dashboard (`.pcap` / `.pcapng`).
+- **Investigation, not just detection:** every flagged window gets a *culprit summary* (who talked to whom, which ports and protocols, how much) and a plain-English *attack-type hint* (port scan, network sweep, SYN / UDP / ICMP flood, login brute-force, data exfiltration, DNS tunnelling).
+- **Incidents:** flagged windows are grouped into incidents with a start and end, the hosts involved and peak severity. Unrelated attacks running at the same time become separate incidents.
+- **Offline response advisor:** each incident comes with a step-by-step plan (confirm, contain, investigate, prevent) filled in with the real addresses and ports, plus copy-paste firewall commands with undo. Runs entirely on your machine; nothing is ever blocked automatically.
+- **Evidence for Wireshark:** high-severity incidents are saved as headers-only `.pcap` files (payload cut off). Download them from the dashboard.
+- **Alerts:** desktop notification, browser notification, and optional email and Slack.
+- Drag-and-drop PCAP analysis in the dashboard (`.pcap` / `.pcapng`), now with incidents too.
 - Versioned 32-feature representation of traffic windows; packet payloads are never stored.
 - Isolation Forest anomaly model with saved preprocessing and metadata.
 - SQLite event history with automatic retention, REST API, interactive API docs.
@@ -61,7 +66,11 @@ Everything works with defaults. To change something, copy `.env.example` to `.en
 
 - `GET /health` — service/model status.
 - `GET /api/stats` — event totals.
-- `GET /api/events?limit=50` — recent events.
+- `GET /api/events?limit=50` — recent events (flagged ones include the culprit summary and hints).
+- `GET /api/incidents?limit=50` — incidents, newest first.
+- `GET /api/incidents/{id}` — one incident with the advisor's response plan.
+- `GET /api/incidents/{id}/evidence` — download the incident's headers-only `.pcap`.
+- `POST /api/alerts/test` — send a test alert on every configured channel (dashboard button).
 - `GET /api/features` — feature names and schema version.
 - `GET /api/status` — monitor phase, learning progress, warnings, model info.
 - `POST /api/monitor/{pause|resume|relearn}` and `POST /api/pcap` — used by the dashboard; require header `X-Requested-With: netai` (and the API key if set).
@@ -78,7 +87,7 @@ Example request body (replace the example values with 32 actual extracted featur
 }
 ```
 
-If `NETAI_API_KEY` is set, provide it in the `X-API-Key` header for prediction and control requests (the dashboard asks for it once). Keep the service bound to `127.0.0.1` unless you have configured authentication, firewall rules and TLS for a trusted network.
+If `NETAI_API_KEY` is set, provide it in the `X-API-Key` header for prediction and control requests, and for the event, incident and evidence endpoints, since those contain IP addresses (the dashboard asks for it once). Keep the service bound to `127.0.0.1` unless you have configured authentication, firewall rules and TLS for a trusted network.
 
 ## Configuration
 
@@ -98,7 +107,44 @@ All optional. Put overrides in `.env` (loaded automatically) or in the environme
 | `NETAI_DB` / `NETAI_MODEL` / `NETAI_BASELINE` | `data/netai.db` / `models/anomaly_model.joblib` / `data/baseline.npz` | File locations |
 | `NETAI_MAX_EVENTS` | `50000` | Newest events kept in the database |
 | `NETAI_MAX_PCAP_MB` | `500` | Largest PCAP accepted through the dashboard |
-| `NETAI_API_KEY` | empty | Optional key for prediction/control requests |
+| `NETAI_API_KEY` | empty | Optional key for prediction/control requests and host data |
+| `NETAI_EVIDENCE` | `high` | Save headers-only evidence for incidents at this severity and above: `off` · `high` · `medium` · `all` |
+| `NETAI_EVIDENCE_DIR` / `NETAI_EVIDENCE_MAX_MB` | `data/evidence` / `200` | Where evidence goes; oldest files are deleted above the size cap |
+| `NETAI_EVIDENCE_MAX_PACKETS` | `20000` | Packets saved per incident |
+| `NETAI_INCIDENT_CLOSE_AFTER` | `3` | An incident ends after this many windows in a row without it |
+| `NETAI_INCIDENT_GAP_SECONDS` | `120` | …or after this long with no activity |
+| `NETAI_TRUSTED_HOSTS` | empty | Comma-separated addresses expected to look odd (your own scanner, backup server). The advisor points it out |
+| `NETAI_ALERT_MIN_SEVERITY` | `high` | Alert for incidents at this severity and above (`medium` / `high`) |
+| `NETAI_ALERT_DESKTOP` | `1` | Desktop notification |
+| `NETAI_SLACK_WEBHOOK` | empty | Slack incoming-webhook URL; enables Slack alerts |
+| `NETAI_SMTP_HOST` / `_PORT` / `_USER` / `_PASSWORD` / `_FROM` / `_TLS` | empty / `587` / … / `starttls` | Email server; with `NETAI_ALERT_EMAIL_TO` enables email alerts |
+| `NETAI_ALERT_EMAIL_TO` | empty | Comma-separated recipients |
+| `NETAI_ALERT_INCLUDE_HOSTS` | `1` | `0` replaces IP addresses with `[address]` in email/Slack alerts |
+| `NETAI_DASHBOARD_URL` | empty | Link included in alerts |
+
+## When something is flagged: investigating an incident
+
+1. Open the **Incidents** table on the dashboard and click the incident.
+2. **What is happening** gives NetAI's best guess (with a confidence level). **Who was involved** lists the main conversations: from, to, protocol, packets, data, ports. Addresses marked *your network* are your own devices.
+3. Follow the **Suggested response**: *Confirm* (is it real, is it yours?), *Contain* (block or isolate, with copy-paste commands and undo), *Investigate*, *Prevent*.
+4. **Download evidence** and open it in Wireshark (*Statistics → Conversations* and *I/O Graph* are the quickest views). Wireshark will say the packets are shorter than their original length: that is the payload being cut off on purpose.
+
+Hints and plans are suggestions, not verdicts. NetAI never blocks traffic by itself, because automatic blocking can cut off legitimate users.
+
+### Privacy: what is stored
+
+| Stored | When | Contains |
+|---|---|---|
+| Feature numbers | every window | aggregate counts only |
+| Culprit summary | flagged windows only | IP addresses, ports, protocols, packet/byte counts |
+| Evidence `.pcap` | incidents at/above `NETAI_EVIDENCE` | IP + TCP/UDP/ICMP headers (addresses, ports, flags). **No payload, no MAC addresses** |
+| Alerts | when sent | summary with addresses (set `NETAI_ALERT_INCLUDE_HOSTS=0` to remove them from email/Slack) |
+
+IP addresses and packet headers count as personal data in many workplaces. Set `NETAI_EVIDENCE=off` if you are not allowed to keep them, and follow your organisation's retention policy. Evidence and the database stay on this machine (`data/`, ignored by git).
+
+### Alerts
+
+The desktop notification works out of the box (Linux needs `notify-send`, from `libnotify-bin`). Use **Send test alert** on the dashboard to check it, and **Enable browser notifications** for pop-ups while the dashboard is open. For email, set the `NETAI_SMTP_*` settings and `NETAI_ALERT_EMAIL_TO` (with Gmail, use an *app password*). For Slack, create an incoming webhook and set `NETAI_SLACK_WEBHOOK`. Simulated (demo) incidents never send desktop/email/Slack alerts.
 
 ## Model limitations and responsible use
 
@@ -108,7 +154,8 @@ All optional. Put overrides in `.env` (loaded automatically) or in the environme
 - A baseline can contain attacks or unusual-but-legitimate activity; curate training data.
 - Isolation Forest identifies statistical outliers, not specific malware families or attack techniques.
 - The contamination setting influences the expected outlier proportion.
-- Scores and severity labels are triage aids, not calibrated probabilities.
+- Scores and severity labels are triage aids, not calibrated probabilities. *High* means the score is far above typical normal traffic, or the traffic clearly matches a known attack pattern.
+- Attack-type hints are simple rules on header statistics within ~100-packet windows. Slow attacks spread over hours (a scan of one port every minute) can stay below them, and legitimate tools (backups, vulnerability scanners, VPNs) can match them. Use `NETAI_TRUSTED_HOSTS` for known ones.
 - The current feature set focuses on IPv4 aggregate metadata. It does not inspect encrypted payloads, fully parse IPv6, or replace an IDS such as Zeek or Suricata.
 - Do not capture networks without permission. Follow your workplace's privacy, retention and monitoring policies.
 
@@ -124,7 +171,12 @@ python start.py        # sets up .venv; then Ctrl+C
 
 ```text
 src/netai_detector/
-  monitor.py      Automatic engine: learn -> train -> monitor
+  monitor.py      Automatic engine: learn -> train -> monitor -> investigate
+  forensics.py    Culprit summaries and attack-type hints (packet headers only)
+  incidents.py    Groups flagged windows into incidents
+  advisor.py      Offline response playbooks filled in with real hosts/ports
+  evidence.py     Headers-only .pcap evidence files
+  alerts.py       Desktop, email and Slack alerts
   api.py          FastAPI API
   dashboard.py    Dashboard page
   capture.py      Live capture (Scapy or built-in raw socket) + PCAP extraction
