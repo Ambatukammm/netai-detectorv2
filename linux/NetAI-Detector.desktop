@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=NetAI Detector
+Comment=Start NetAI Detector (installs what it needs on first run)
+Exec=sh -c 'cd "$(dirname "%k")" && bash ./run.sh'
+Icon=utilities-terminal
+Terminal=true
+Categories=Network;Security;
