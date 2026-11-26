@@ -404,24 +404,25 @@ def render_html(report: dict) -> str:
     gen = report["generated_at"][:16].replace("T", " ")
     parts = [f"""<!doctype html><html><head><meta charset="utf-8"><title>{e(report['title'])}</title></head>
 <body style="margin:0;background:#f4f6f9;font-family:Segoe UI,Arial,sans-serif;color:#1d2733">
-<div style="max-width:860px;margin:auto;padding:24px">
+<div style="max-width:860px;margin:auto;padding:24px;line-height:1.5;overflow-wrap:break-word">
 <div style="background:#0b1220;color:#e8eef8;border-radius:12px;padding:22px 24px">
 <div style="font-size:13px;color:#91a2ba">NetAI Detector · {e(gen)} UTC</div>
-<div style="font-size:24px;font-weight:700;margin:4px 0">{e(report['title'])}</div>
+<div style="font-size:24px;font-weight:700;margin:4px 0;line-height:1.25">{e(report['title'])}</div>
 <div style="font-size:15px">{e(report['headline'])}</div></div>
-<table role="presentation" style="width:100%;margin:16px 0;border-collapse:separate;border-spacing:8px"><tr>
-<td style="background:#fff;border-radius:10px;padding:14px;text-align:center;width:120px">
-<div style="font-size:12px;color:#5b6b7f">Health grade</div><div style="font-size:36px;font-weight:700">{e(report['grade'])}</div>
-<div style="font-size:12px;color:#5b6b7f">{report['score']}/100</div></td>"""]
+<div style="margin:16px -4px;font-size:0">
+<div style="display:inline-block;vertical-align:top;box-sizing:border-box;width:128px;margin:4px;background:#fff;border-radius:10px;padding:14px 10px;text-align:center;font-size:14px">
+<div style="font-size:12px;color:#5b6b7f">Health grade</div><div style="font-size:36px;font-weight:700;line-height:1.15">{e(report['grade'])}</div>
+<div style="font-size:12px;color:#5b6b7f">{report['score']}/100</div></div>"""]
     for label, value in report["stats"][:6]:
-        parts.append(f'<td style="background:#fff;border-radius:10px;padding:14px;text-align:center">'
+        parts.append('<div style="display:inline-block;vertical-align:top;box-sizing:border-box;min-width:128px;max-width:100%;margin:4px;'
+                     'background:#fff;border-radius:10px;padding:14px 12px;text-align:center;font-size:14px">'
                      f'<div style="font-size:12px;color:#5b6b7f">{e(str(label))}</div>'
-                     f'<div style="font-size:22px;font-weight:700">{e(str(value))}</div></td>')
-    parts.append("</tr></table>")
+                     f'<div style="font-size:22px;font-weight:700;line-height:1.25;margin-top:4px;overflow-wrap:anywhere">{e(str(value))}</div></div>')
+    parts.append("</div>")
     why = report.get("grade_reasons")
     if why:
         lost = " · ".join(f"−{r['points']} for {r['count']} {r['severity']}-priority finding(s)" for r in why["lost"])
-        parts.append('<div style="background:#fff;border-radius:10px;padding:10px 16px;margin:-6px 0 16px;font-size:13px;color:#3b4a5c">'
+        parts.append('<div style="background:#fff;border-radius:10px;padding:10px 16px;margin:0 0 16px;font-size:13px;color:#3b4a5c">'
                      f'<b>Why grade {e(report["grade"])}:</b> {e(lost) + "." if lost else "nothing cost points."}'
                      + (f' {e(why["tip"])}' if why.get("tip") else "")
                      + f'<div style="color:#7a8797;margin-top:3px">{e(why["scale"])}</div></div>')
@@ -432,11 +433,11 @@ def render_html(report: dict) -> str:
             body = body.replace(label, f'<b style="color:#0b1220">{label}</b>')
         parts.append('<div style="background:#fff;border-left:4px solid #7c4dff;border-radius:10px;padding:16px 18px;margin-bottom:16px">'
                      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">'
-                     '<div style="width:34px;height:34px;border-radius:50%;background:#7c4dff;color:#fff;font-weight:700;'
+                     '<div style="flex:none;width:34px;height:34px;border-radius:50%;background:#7c4dff;color:#fff;font-weight:700;'
                      'display:inline-flex;align-items:center;justify-content:center;font-size:16px;text-align:center;line-height:34px">A</div>'
                      '<div><div style="font-weight:700">Aya\'s review</div>'
                      f'<div style="font-size:12px;color:#5b6b7f">NetAI\'s local AI analyst · {e(aya.get("engine") or "built-in")}</div></div></div>'
-                     f'<div style="white-space:pre-wrap;line-height:1.55">{body}</div>'
+                     f'<div style="white-space:pre-wrap;line-height:1.55;overflow-wrap:anywhere">{body}</div>'
                      + (f'<div style="font-size:12px;color:#8a5a00;margin-top:8px">{e(aya["note"])}</div>' if aya.get("note") else "")
                      + '<div style="font-size:12px;color:#5b6b7f;margin-top:8px">Aya runs on this computer. '
                      'Her review is advice: check before acting.</div></div>')
@@ -448,10 +449,10 @@ def render_html(report: dict) -> str:
         items = "".join(f"<li>{e(i)}</li>" for i in f["items"][:25])
         more = f"<li>…and {len(f['items']) - 25} more</li>" if len(f["items"]) > 25 else ""
         parts.append(f'<div style="background:#fff;border-radius:10px;padding:14px 16px;margin:10px 0;border-left:4px solid {color}">'
-                     f'<div><span style="color:{color};font-weight:700;text-transform:uppercase;font-size:12px">{e(f["severity"])}</span> '
-                     f'<b>{e(f["title"])}</b></div>'
+                     f'<div style="font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:{color}">{e(f["severity"])}</div>'
+                     f'<div style="font-weight:700;font-size:15px;margin-top:2px">{e(f["title"])}</div>'
                      + (f'<div style="margin-top:4px">{e(f["detail"])}</div>' if f["detail"] else "")
-                     + (f'<ul style="margin:6px 0;padding-left:20px;font-size:14px">{items}{more}</ul>' if items else "")
+                     + (f'<ul style="margin:6px 0;padding-left:20px;font-size:14px;overflow-wrap:anywhere">{items}{more}</ul>' if items else "")
                      + (f'<div style="margin-top:6px"><b>Recommended:</b> {e(f["action"])}</div>' if f.get("action") else "")
                      + "</div>")
     ch = report.get("changes")
@@ -462,11 +463,11 @@ def render_html(report: dict) -> str:
     for t in report["tables"]:
         if not t["rows"]:
             continue
-        head = "".join(f'<th style="text-align:left;padding:6px 8px;border-bottom:1px solid #d5dbe3;font-size:12px;color:#5b6b7f">{e(c)}</th>' for c in t["columns"])
-        body = "".join("<tr>" + "".join(f'<td style="padding:6px 8px;border-bottom:1px solid #edf0f4;font-size:13px">{e(str(v))}</td>' for v in r) + "</tr>"
+        head = "".join(f'<th style="text-align:left;padding:6px 8px;border-bottom:1px solid #d5dbe3;font-size:12px;color:#5b6b7f;white-space:nowrap">{e(c)}</th>' for c in t["columns"])
+        body = "".join("<tr>" + "".join(f'<td style="padding:6px 8px;border-bottom:1px solid #edf0f4;font-size:13px;vertical-align:top;overflow-wrap:break-word">{e(str(v))}</td>' for v in r) + "</tr>"
                        for r in t["rows"][:300])
         parts.append(f'<h2 style="font-size:18px">{e(t["title"])}</h2><div style="background:#fff;border-radius:10px;padding:6px;overflow:auto">'
-                     f'<table style="width:100%;border-collapse:collapse"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>')
+                     f'<table style="width:100%;min-width:560px;border-collapse:collapse"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table></div>')
     parts.append('<p style="font-size:12px;color:#5b6b7f;margin-top:24px">Generated by NetAI Detector on this network. '
                  'Findings are based on what NetAI could observe and are suggestions, not guarantees.</p></div></body></html>')
     return "".join(parts)

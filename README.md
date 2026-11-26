@@ -1,7 +1,7 @@
 # NetAI Detector
 
 **Cross-platform network anomaly detection and monitoring toolkit.**  
-**Made by Ruel · Version 2.8.1**
+**Made by Ruel · Version 2.8.2**
 
 NetAI Detector is an independent cybersecurity project designed to help inspect network traffic, build a baseline of normal activity, identify statistically unusual traffic windows, and review detection events through a local web dashboard.
 

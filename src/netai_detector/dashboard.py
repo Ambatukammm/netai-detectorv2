@@ -30,9 +30,15 @@ button,.btn{background:#1b2d49;color:var(--text);border:1px solid var(--line);bo
 .note.warn{border-color:var(--warn);background:#2a2312}
 pre.cmd{background:#0a1422;border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin:4px 0;white-space:pre-wrap;word-break:break-all;font:12.5px/1.45 Consolas,Menlo,monospace}
 .cmdrow{display:flex;gap:8px;align-items:flex-start}.cmdrow pre{flex:1}.cmdrow button{padding:5px 10px;font-size:12px;margin-top:4px}
-.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:14px 22px}.two>*,.grid>*{min-width:0}
+.table-wrap{max-width:100%;overflow-x:auto}td{overflow-wrap:break-word}td.num,th.num{white-space:nowrap;text-align:right}
+.host{display:block;white-space:nowrap}.host b{display:block;font-weight:600;max-width:28ch;overflow:hidden;text-overflow:ellipsis}.host .ip{display:block;color:var(--muted);font-size:12px}
+#detail .meta{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:2px}#detail .sec{margin-top:6px}#detail .phase>div:first-child{min-width:0;flex:1 1 360px}
+#detail p,#detail li,.note{overflow-wrap:anywhere}
 footer{text-align:center;padding:26px;color:var(--muted);border-top:1px solid var(--line);margin-top:40px}
-@media(max-width:600px){header{align-items:flex-start;flex-direction:column}table{min-width:720px}.table-wrap{overflow:auto}}
+input,select,textarea{min-width:0;max-width:100%}.row>*{min-width:0;max-width:100%}.card{min-width:0}
+@media(max-width:820px){.two{grid-template-columns:minmax(0,1fr)!important}}
+@media(max-width:600px){header{align-items:flex-start;flex-direction:column}.table-wrap table{min-width:640px}select,input[type=text],input[type=password]{max-width:calc(100vw - 96px)}.row label[style*='width:110px']{width:100%!important}}
 nav{display:flex;gap:6px;flex-wrap:wrap}nav a{color:var(--muted);text-decoration:none;padding:7px 13px;border-radius:8px;border:1px solid transparent}
 nav a:hover{color:var(--text);border-color:var(--line)}nav a.on{color:var(--text);background:#1b2d49;border-color:var(--line)}
 .chip{display:inline-block;background:#16243b;border:1px solid var(--line);border-radius:6px;padding:0 6px;margin:1px 3px 1px 0;font-size:12px;white-space:nowrap}
@@ -136,13 +142,14 @@ MONITOR_BODY = r"""
 MONITOR_JS = r"""let selected=null,selectedSig='',maxIncident=null;
 async function download(id){try{const r=await fetch('/api/incidents/'+id+'/evidence',{headers:hdr()});if(!r.ok)throw new Error((await r.json().catch(()=>({}))).detail||r.status);
  const blob=await r.blob();const name=(r.headers.get('Content-Disposition')||'').match(/filename="?([^";]+)/);const a=el('a',{href:URL.createObjectURL(blob),download:name?name[1]:'incident-'+id+'.pcap'});document.body.append(a);a.click();a.remove()}catch(e){alert('Could not download evidence: '+e.message)}}
-function table(head,rows){return el('div',{className:'table-wrap'},el('table',{},el('thead',{},el('tr',{},head.map(h=>el('th',{},h)))),el('tbody',{},rows.map(r=>el('tr',{},r.map(v=>el('td',{},v)))))))}
+function table(head,rows,num=[]){return el('div',{className:'table-wrap'},el('table',{},el('thead',{},el('tr',{},head.map((h,i)=>el('th',{className:num.includes(i)?'num':''},h)))),el('tbody',{},rows.map(r=>el('tr',{},r.map((v,i)=>el('td',{className:num.includes(i)?'num':''},v)))))))}
+function hostCell(ip){const n=NAMES[ip];return n?el('span',{className:'host',title:n+' ('+ip+')'},el('b',{},n),el('span',{className:'ip'},ip)):el('span',{className:'host'},ip||'—')}
 async function showIncident(id,force){
  const d=await get('/api/incidents/'+id);const sig=d.status+d.windows+d.peak_severity+d.evidence_packets;
  if(!force&&selected===id&&sig===selectedSig)return;selected=id;selectedSig=sig;
  Object.assign(NAMES,d.names||{});const p=d.plan,box=$('detail');box.hidden=false;box.replaceChildren();
  box.append(el('div',{className:'phase'},el('div',{},el('h3',{},'Incident #'+d.id+' — '+p.title),
-   el('div',{className:'muted'},(d.status==='open'?'Ongoing since ':'From ')+when(d.started_at)+(d.status==='open'?'':' to '+when(d.ended_at)+' ('+(d.close_reason||'closed')+')')+' · peak severity ',el('span',{className:d.peak_severity},d.peak_severity),d.severity_reason?' ('+d.severity_reason+')':'',' · '+d.windows+' flagged window(s) · source '+d.source)),
+   el('div',{className:'muted meta'},el('span',{},(d.status==='open'?'Ongoing since ':'From ')+when(d.started_at)+(d.status==='open'?'':' to '+when(d.ended_at)+' ('+(d.close_reason||'closed')+')')),el('span',{},'Peak severity ',el('span',{className:d.peak_severity},d.peak_severity),d.severity_reason?' ('+d.severity_reason+')':''),el('span',{},d.windows+' flagged window(s)'),el('span',{},'Source: '+d.source))),
   el('div',{className:'actions'},d.evidence_available?el('button',{onclick:()=>download(d.id)},'Download evidence (.pcap)'):null,d.status!=='open'?el('button',{onclick:()=>del('/api/incidents/'+d.id,'Delete incident #'+d.id+(d.evidence_available?' and its evidence file':'')+'?',()=>{box.hidden=true;selected=null;refresh()})},'Delete'):null,el('button',{onclick:()=>{box.hidden=true;selected=null;renderIncidents(lastIncidents)}},'Close'))));
  if(String(d.source).startsWith('demo'))box.append(el('div',{className:'note'},'Simulated incident (demo mode). The addresses are made up.'));
  box.append(el('div',{className:'note'},el('b',{},'What is happening: '),p.summary,' ',el('span',{className:'muted'},'(confidence: '+p.confidence+')')));
@@ -150,12 +157,12 @@ async function showIncident(id,force){
  if(p.also_seen&&p.also_seen.length)box.append(el('div',{className:'muted'},'Also matched: '+p.also_seen.join(', ')));
  const c=d.culprits||{};const left=el('div'),right=el('div');
  left.append(el('h4',{},'Who was involved'));
- if(c.top_flows&&c.top_flows.length)left.append(table(['From','To','Proto','Packets','Data','Ports'],c.top_flows.slice(0,6).map(f=>[who(f.src),who(f.dst),f.proto.toUpperCase(),f.packets,fmtBytes(f.bytes),f.distinct_dst_ports>5?f.distinct_dst_ports+' different':(f.top_dst_ports||[]).join(', ')])));
+ if(c.top_flows&&c.top_flows.length)left.append(table(['From','To','Protocol','Packets','Data','Destination ports'],c.top_flows.slice(0,6).map(f=>[hostCell(f.src),hostCell(f.dst),f.proto.toUpperCase(),Number(f.packets).toLocaleString(),fmtBytes(f.bytes),f.distinct_dst_ports>5?f.distinct_dst_ports+' different':(f.top_dst_ports||[]).join(', ')||'—']),[3,4]));
  else left.append(el('div',{className:'muted'},'No packet details were available for this incident.'));
  if(c.top_sources&&c.top_sources.length)left.append(el('div',{className:'muted',style:'margin-top:8px'},'Busiest senders: '+c.top_sources.slice(0,4).map(s=>who(s.ip)+(s.internal?' (your network)':' (outside)')).join(', ')));
- right.append(el('h4',{},'Why NetAI thinks so'),el('ul',{},(d.hints||[]).map(h=>el('li',{},el('b',{},h.title),' — '+h.evidence+' ',el('span',{className:'muted'},'['+h.confidence+(h.windows?', '+h.windows+' window(s)':'')+']')))));
- if(d.top_features&&d.top_features.length)right.append(el('div',{className:'muted'},'Biggest deviations from normal: '+d.top_features.map(f=>f.feature+' ('+zfmt(f.z)+')').join(', ')));
- box.append(el('div',{className:'two'},left,right));
+ right.append(el('h4',{},'Why NetAI thinks so'),(d.hints||[]).length?el('ul',{},d.hints.map(h=>el('li',{},el('b',{},h.title),': '+h.evidence+' ',el('span',{className:'muted'},'('+h.confidence+' confidence'+(h.windows?', '+h.windows+' window(s)':'')+')')))):el('div',{className:'muted'},'No known attack pattern matched; the traffic was statistically unusual.'));
+ if(d.top_features&&d.top_features.length)right.append(el('div',{className:'muted',style:'margin-top:6px'},'Biggest deviations from normal: ',d.top_features.map((f,i)=>el('span',{className:'chip'},f.feature.replace(/_/g,' ')+' '+zfmt(f.z)))));
+ left.className='sec';right.className='sec';box.append(left,right);
  box.append(el('h4',{},'Suggested response'));
  for(const s of p.steps)box.append(el('div',{},el('b',{},s.phase),el('ol',{},s.items.map(i=>el('li',{},i)))));
  if(p.commands&&p.commands.length){box.append(el('h4',{},'Copy-paste commands (run only after confirming)'));
@@ -571,7 +578,7 @@ TERMINAL_BODY = r"""
 <pre id="screen" style="margin:0;background:#05090f;color:#d5e4f5;font:13px/1.45 Consolas,Menlo,monospace;padding:12px 14px;height:460px;overflow:auto;white-space:pre-wrap;word-break:break-word"></pre>
 <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;border-top:1px solid var(--line);background:#070d16">
 <span style="font:13px Consolas,Menlo,monospace;color:#7c4dff">netai&gt;</span>
-<input type="text" id="cmd" autocomplete="off" spellcheck="false" placeholder="nmap -sn 192.168.1.0/24" style="flex:1;font:13px Consolas,Menlo,monospace;background:transparent;border:0;outline:0;color:var(--text)">
+<input type="text" id="cmd" autocomplete="off" spellcheck="false" placeholder="nmap -sn 192.168.1.0/24" size="8" style="flex:1;min-width:0;font:13px Consolas,Menlo,monospace;background:transparent;border:0;outline:0;color:var(--text)">
 <button id="runbtn" class="small">Run</button></div></div></div>
 <div class="row" style="justify-content:space-between;margin:26px 0 10px"><h2 class="section" style="margin:0">Command log</h2><span class="actions"><button class="small" id="clearlog">Clear log</button></span></div>
 <div class="card table-wrap"><table><thead><tr><th>When</th><th>Command</th><th>Shell</th><th>Exit</th><th>Time</th><th></th></tr></thead><tbody id="log"><tr><td colspan="6" class="muted">Loading…</td></tr></tbody></table></div>
